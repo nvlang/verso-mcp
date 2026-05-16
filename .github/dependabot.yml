@@ -1,0 +1,30 @@
+version: 2
+
+# Tuned to be quiet: monthly checks, and every ecosystem's updates are bundled
+# into a single grouped pull request — so at most ~2 PRs per month. Conventional
+# Commit prefixes keep the `cz check` CI job (and changelog) happy. Non-major
+# updates are auto-merged once CI passes (see dependabot-auto-merge.yml).
+updates:
+  # Python dependencies — uv reads pyproject.toml + uv.lock.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "build"
+    groups:
+      python:
+        patterns: ["*"]
+
+  # GitHub Actions pinned in the workflow files.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]

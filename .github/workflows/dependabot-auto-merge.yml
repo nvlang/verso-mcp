@@ -1,0 +1,36 @@
+name: Dependabot auto-merge
+
+# Auto-merges non-major Dependabot updates once CI passes. Major-version bumps
+# are left for manual review.
+#
+# Requires, in repository Settings:
+#   * "Allow auto-merge" enabled (Settings > General).
+#   * A branch protection rule on `main` that requires the CI status checks —
+#     without a required check, auto-merge would merge immediately instead of
+#     waiting for CI.
+#
+# Note: merging to `main` runs CI only; it does NOT publish. Releases are cut
+# deliberately with `cz bump` (which pushes a version tag).
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch update metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+      - name: Approve and enable auto-merge for non-major updates
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
