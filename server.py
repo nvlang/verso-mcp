@@ -79,7 +79,7 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024        # cap any single HTTP body
 MAX_MARKDOWN_BYTES = 200 * 1024             # cap Markdown returned to the agent
 MAX_ANCHOR_HTML_BYTES = 80 * 1024           # cap anchor-extraction fallback
 MAX_PAGE_CACHE_BYTES = 200 * 1024 * 1024    # LRU-evict a site's page cache above this
-USER_AGENT = "verso-mcp/0.3 (+local; uv-run)"
+USER_AGENT = "verso-mcp/0.3.1 (+local; uv-run)"
 ALLOWED_CONTENT_TYPES = frozenset({"text/html", "application/json"})
 
 # Used when VERSO_MCP_SITES is unset or yields no usable entries.
@@ -174,7 +174,10 @@ def _parse_sites(spec: str) -> dict[str, Site]:
         item = item.strip()
         if not item:
             continue
-        if "=" in item:
+        # Split on the first '=' for an `alias=url` pair — but not when the part
+        # before '=' is itself a URL (a bare URL may legitimately contain '=').
+        head = item.partition("=")[0].strip().lower()
+        if "=" in item and not head.startswith(("http://", "https://")):
             raw_alias, _, raw_url = item.partition("=")
         else:
             raw_alias, raw_url = "", item
@@ -441,7 +444,12 @@ def _enforce_page_cache_budget(pages_dir: Path) -> None:
 # --------------------------------------------------------------------- index building
 
 async def _load_xref(site: Site) -> Any:
-    """Load and parse a site's xref.json, recovering from a corrupt cache."""
+    """Load and parse a site's xref.json, recovering from a corrupt cache.
+
+    Raises a clear RuntimeError (not a bare JSONDecodeError) when the response
+    still isn't valid JSON after a refetch — typically because the configured
+    URL is not a Verso Manual-genre site.
+    """
     xref_cache = site.cache_dir / "xref.json"
     body, _ = await _cached_get(site.xref_url, xref_cache, XREF_TTL_SECONDS)
     try:
@@ -453,7 +461,13 @@ async def _load_xref(site: Site) -> Any:
             except FileNotFoundError:
                 pass
         body, _ = await _cached_get(site.xref_url, xref_cache, XREF_TTL_SECONDS)
-        return json.loads(body)
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"{site.xref_url} did not return valid JSON; '{site.alias}' may not "
+                f"be a Verso Manual-genre site (those publish xref.json at their root)"
+            ) from exc
 
 
 def _domain_slug(domain_key: str) -> str:
@@ -524,7 +538,16 @@ def _build_index(site: Site, xref: Any) -> SiteIndex:
                     titles = [t for t in titles if t]
                     if titles:
                         context = " > ".join(titles)
-                page = addr if str(addr).startswith("http") else root + "/" + str(addr).lstrip("/")
+                addr_s = str(addr)
+                if addr_s.lower().startswith(("http://", "https://")):
+                    # Real Verso addresses are site-relative; an absolute one is
+                    # kept only if it stays within the owning site's root, so
+                    # every indexed Entry URL is guaranteed fetchable.
+                    if not addr_s.startswith(site.root):
+                        continue
+                    page = addr_s
+                else:
+                    page = root + "/" + addr_s.lstrip("/")
                 entries.append(Entry(
                     kind=slug,
                     name=str(name),
@@ -1047,7 +1070,7 @@ async def _smoke() -> int:
         print(f"--- search({q!r}, kind={k!r}) ---")
         print(await search(q, kind=k, limit=4))
         print()
-    print("--- search('List', kind='term-or-doc', json, paginated) ---")
+    print("--- search('List', kind='doc', json, paginated) ---")
     # 'doc' is the slug for the Lean-constant domain on the Lean reference site
     print((await search("List", kind="doc", limit=2, offset=2, response_format=ResponseFormat.JSON))[:300], "…")
     print()
