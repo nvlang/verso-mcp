@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.YOUR_GITHUB_USERNAME/verso",
+  "description": "MCP server for Verso-generated documentation sites (the Lean Language Reference, Functional Programming in Lean, and other Verso Manual-genre sites).",
+  "repository": {
+    "url": "https://github.com/YOUR_GITHUB_USERNAME/verso-mcp",
+    "source": "github"
+  },
+  "version": "0.3.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "verso-mcp",
+      "version": "0.3.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "VERSO_MCP_SITES",
+          "description": "Comma-separated alias=url list of Verso Manual-genre sites to serve. Defaults to the Lean Language Reference when unset.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,13 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.11"
-# dependencies = [
-#   "mcp[cli]>=1.2",
-#   "httpx>=0.27",
-#   "html2text>=2024.2.26",
-#   "pydantic>=2",
-# ]
-# ///
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 N. V. Lang
 """MCP server for Verso-generated documentation sites.
@@ -40,8 +30,8 @@ Hardening (assumes a possibly-hostile or confused agent driving these tools):
   * each site's cache is bounded by 200 MB LRU eviction; ETag/304 revalidation;
   * Markdown output is capped at 200 KB with a clear truncation marker.
 
-Run standalone for a smoke check:  uv run --script server.py --smoke
-Run as MCP stdio server:           uv run --script server.py
+Run a smoke check:        verso-mcp --smoke   (or python -m verso_mcp --smoke)
+Run as MCP stdio server:  verso-mcp           (or python -m verso_mcp)
 """
 
 from __future__ import annotations
@@ -70,6 +60,8 @@ from pydantic import Field
 
 # --------------------------------------------------------------------- constants
 
+__version__ = "0.3.1"
+
 CACHE_DIR = Path(
     os.environ.get("VERSO_MCP_CACHE", str(Path.home() / ".cache" / "verso-mcp"))
 )
@@ -79,7 +71,7 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024        # cap any single HTTP body
 MAX_MARKDOWN_BYTES = 200 * 1024             # cap Markdown returned to the agent
 MAX_ANCHOR_HTML_BYTES = 80 * 1024           # cap anchor-extraction fallback
 MAX_PAGE_CACHE_BYTES = 200 * 1024 * 1024    # LRU-evict a site's page cache above this
-USER_AGENT = "verso-mcp/0.3.1 (+local; uv-run)"
+USER_AGENT = f"verso-mcp/{__version__}"
 ALLOWED_CONTENT_TYPES = frozenset({"text/html", "application/json"})
 
 # Used when VERSO_MCP_SITES is unset or yields no usable entries.
@@ -1094,7 +1086,12 @@ async def _smoke() -> int:
     return 0
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console entry point: run the stdio MCP server, or `--smoke` for a self-check."""
     if len(sys.argv) > 1 and sys.argv[1] == "--smoke":
-        sys.exit(asyncio.run(_smoke()))
+        raise SystemExit(asyncio.run(_smoke()))
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

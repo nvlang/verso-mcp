@@ -5,8 +5,13 @@ __pycache__/
 .venv/
 venv/
 
+# Build artifacts
+dist/
+build/
+
 # uv
 .uv/
+uv.lock
 
 # Evaluation harness output
 evaluation_report*.md

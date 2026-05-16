@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "verso-mcp"
+dynamic = ["version"]
+description = "MCP server for Verso-generated documentation sites (the Lean Language Reference, Functional Programming in Lean, and other Verso Manual-genre sites)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "N. V. Lang", email = "git@nvlang.dev" }]
+keywords = ["mcp", "model-context-protocol", "verso", "lean", "documentation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+]
+dependencies = [
+    "mcp[cli]>=1.2",
+    "httpx>=0.27",
+    "html2text>=2024.2.26",
+    "pydantic>=2",
+]
+
+# TODO before publishing: add a public repository URL once the repo is hosted, e.g.
+# [project.urls]
+# Repository = "https://github.com/<your-username>/verso-mcp"
+
+[project.scripts]
+verso-mcp = "verso_mcp:main"
+
+[tool.hatch.version]
+path = "src/verso_mcp/server.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/verso_mcp"]

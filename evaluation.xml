@@ -1,15 +1,15 @@
 <evaluation>
   <!--
-    Evaluation suite for the lean-reference MCP server (mcp-builder skill, Phase 4).
+    Evaluation suite for the verso-mcp server (mcp-builder skill, Phase 4),
+    targeting the default site: the Lean Language Reference.
     10 read-only, independent questions. Each requires identifying an entity from a
     behavioural description (the `search` tool is name-based, so concepts must be
     found by fetching and reading pages), then extracting a single verifiable fact.
     Answers are intrinsic to the Lean language or historical metadata, chosen to be
     stable across manual revisions.
 
-    Run with the mcp-builder evaluation harness (scripts/evaluation.py): transport
-    "stdio", command "uv", args "run [SCRIPT-FLAG] <path to server.py>", where
-    [SCRIPT-FLAG] is the two-dash "script" option to uv run.
+    Run with the mcp-builder evaluation harness (scripts/evaluation.py) using
+    transport "stdio" and a command that launches the verso-mcp server.
   -->
   <qa_pair>
     <question>The Lean tactic reference documents a tactic that proves a decidable goal by evaluating its `Decidable` instance with Lean's native code compiler, and warns that using it adds the entire Lean compiler to the trusted code base. The manual describes this tactic as a synonym for a different tactic invoked with a single option flag. Write that equivalent tactic invocation exactly as the manual does.</question>

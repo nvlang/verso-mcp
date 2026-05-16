@@ -53,14 +53,13 @@ serve as the network allowlist — see [Safety](#safety--etiquette).
 
 ## Requirements
 
-- [uv](https://docs.astral.sh/uv/). The script declares its dependencies inline
-  ([PEP 723](https://peps.python.org/pep-0723/)), so `uv run` fetches them on
-  first launch — no virtualenv or `pip install` needed.
+[uv](https://docs.astral.sh/uv/). `uv` fetches the package and its dependencies
+automatically on first launch — no manual virtualenv or `pip install` step.
 
 ## Use with Claude Code / Claude Desktop
 
 Add an entry to your MCP configuration (`.mcp.json`, `~/.claude.json`, or
-`claude_desktop_config.json`):
+`claude_desktop_config.json`). Running from a local clone of this repository:
 
 ```json
 {
@@ -68,7 +67,7 @@ Add an entry to your MCP configuration (`.mcp.json`, `~/.claude.json`, or
     "verso": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--script", "/absolute/path/to/verso-mcp/server.py"],
+      "args": ["run", "--directory", "/absolute/path/to/verso-mcp", "verso-mcp"],
       "env": {
         "VERSO_MCP_SITES": "lean-reference=https://lean-lang.org/doc/reference/latest/, fpil=https://lean-lang.org/functional_programming_in_lean/"
       }
@@ -78,8 +77,9 @@ Add an entry to your MCP configuration (`.mcp.json`, `~/.claude.json`, or
 ```
 
 Use an **absolute path** so the server resolves regardless of the client's
-working directory. The `env` block is optional — omit it to serve just the Lean
-Language Reference.
+working directory. Once `verso-mcp` is published to PyPI, the entry simplifies to
+`"command": "uvx"` with `"args": ["verso-mcp"]`. The `env` block is optional —
+omit it to serve just the Lean Language Reference.
 
 ## Environment variables
 
@@ -134,3 +134,5 @@ stable, verifiable answer.
 ## License
 
 [Apache License 2.0](LICENSE) © 2026 N. V. Lang
+
+<!-- mcp-name: io.github.YOUR_GITHUB_USERNAME/verso -->
