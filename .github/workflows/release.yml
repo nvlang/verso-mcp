@@ -3,6 +3,10 @@ name: Release
 # Cut a release by pushing a version tag (commitizen does this via `cz bump`):
 #   cz bump && git push --follow-tags
 #
+# PyPI uploads carry PEP 740 digital attestations (provenance) — cryptographic
+# proof, the same idea as npm provenance, that each artifact was built from
+# this repository by this workflow. PyPI shows this on the project page.
+#
 # Prerequisites (one-time):
 #   * PyPI Trusted Publishing: register this repo + workflow `release.yml` as a
 #     trusted publisher for the `verso-mcp` project at https://pypi.org/manage/.
@@ -39,7 +43,12 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish to PyPI with provenance attestations
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Generate PEP 740 provenance attestations. Default on v1.11+; set
+          # explicitly so the supply-chain guarantee is visible in the workflow.
+          attestations: true
 
   registry:
     needs: build
