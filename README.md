@@ -13,21 +13,43 @@ and more. Verso *Manual*-genre sites publish a machine-readable cross-reference
 index (`xref.json`); this server consumes that index and the rendered HTML —
 **no modifications to Verso or to the documentation site are required.**
 
-## Status
-
-`server.py` (v0.2) targets a **single** Verso site: the Lean Language
-Reference. Generic, multi-site support is on the [roadmap](#roadmap).
+Point it at one or more Verso sites and an agent gets four read-only tools:
+`list_sites`, `list_kinds`, `search`, and `fetch_page`.
 
 ## Tools
 
-| Tool         | Description                                                                                          |
-| ------------ | ---------------------------------------------------------------------------------------------------- |
-| `list_kinds` | List the kinds of indexed entries (tactics, terms, sections, options, …) with counts.                |
-| `search`     | Name-ranked search over the manual's cross-reference index, with `kind` filtering and pagination.    |
-| `fetch_page` | Fetch a manual page — or a single `#anchor` entry — and return it as Markdown.                       |
+| Tool         | Description                                                                                       |
+| ------------ | ------------------------------------------------------------------------------------------------- |
+| `list_sites` | Enumerate the configured Verso sites and their aliases.                                           |
+| `list_kinds` | List a site's entry kinds (tactics, terms, sections, options, …) with counts.                     |
+| `search`     | Name-ranked search over a site's cross-reference index, with `kind` filtering and pagination.     |
+| `fetch_page` | Fetch a page — or a single `#anchor` entry — from a site and return it as Markdown.               |
 
-All three tools are read-only and accept a `response_format` of `markdown`
-(default) or `json`.
+`list_kinds`, `search`, and `fetch_page` take an optional `site` argument (an
+alias from `list_sites`); omit it to use the default site. All tools are
+read-only and accept a `response_format` of `markdown` (default) or `json`.
+
+Entry "kinds" are derived dynamically from each site's `xref.json`, so
+project-specific domains (Lake commands, error explanations, …) are picked up
+automatically — nothing about a particular site is hard-coded.
+
+## Configuring sites
+
+Set the `VERSO_MCP_SITES` environment variable to a comma-separated list of
+`alias=url` pairs. A bare URL (no `alias=`) gets an alias derived from its path.
+
+```
+VERSO_MCP_SITES="lean-reference=https://lean-lang.org/doc/reference/latest/,
+                 fpil=https://lean-lang.org/functional_programming_in_lean/,
+                 tpil=https://lean-lang.org/theorem_proving_in_lean4/"
+```
+
+The first site listed is the default. If `VERSO_MCP_SITES` is unset, the server
+defaults to a single site, the Lean Language Reference.
+
+A site URL must be the root directory that contains `xref.json` (Verso writes it
+there for Manual- and Tutorial-genre sites). The configured site roots also
+serve as the network allowlist — see [Safety](#safety--etiquette).
 
 ## Requirements
 
@@ -43,75 +65,71 @@ Add an entry to your MCP configuration (`.mcp.json`, `~/.claude.json`, or
 ```json
 {
   "mcpServers": {
-    "lean-reference": {
+    "verso": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--script", "/absolute/path/to/verso-mcp/server.py"]
+      "args": ["run", "--script", "/absolute/path/to/verso-mcp/server.py"],
+      "env": {
+        "VERSO_MCP_SITES": "lean-reference=https://lean-lang.org/doc/reference/latest/, fpil=https://lean-lang.org/functional_programming_in_lean/"
+      }
     }
   }
 }
 ```
 
 Use an **absolute path** so the server resolves regardless of the client's
-working directory.
+working directory. The `env` block is optional — omit it to serve just the Lean
+Language Reference.
 
-## Configuration
+## Environment variables
 
-Environment variables (all optional):
+All optional:
 
-| Variable                    | Default                      | Purpose                                                |
-| --------------------------- | ---------------------------- | ------------------------------------------------------ |
-| `LEAN_REF_MCP_CACHE`        | `~/.cache/lean-reference-mcp` | Cache directory for `xref.json` and fetched pages.     |
-| `LEAN_REF_MCP_RATE_PER_SEC` | `2`                          | Sustained outbound request rate (requests/second).    |
-| `LEAN_REF_MCP_RATE_BURST`   | `5`                          | Token-bucket burst capacity.                           |
-| `LEAN_REF_MCP_RATE_MAX_WAIT`| `3`                          | Max seconds to wait for a token before refusing.       |
+| Variable                    | Default                       | Purpose                                                          |
+| --------------------------- | ----------------------------- | ---------------------------------------------------------------- |
+| `VERSO_MCP_SITES`           | Lean Language Reference        | Comma-separated `alias=url` site list (see above).               |
+| `VERSO_MCP_CACHE`           | `~/.cache/verso-mcp`           | Cache directory (each site cached in its own subdirectory).      |
+| `VERSO_MCP_RATE_PER_SEC`    | `2`                            | Sustained outbound request rate (requests/second).              |
+| `VERSO_MCP_RATE_BURST`      | `5`                            | Token-bucket burst capacity.                                     |
+| `VERSO_MCP_RATE_MAX_WAIT`   | `3`                            | Max seconds to wait for a token before refusing.                |
 
 ## Safety & etiquette
 
-The server is built to be a well-behaved client of the documentation site:
+The server is built to be a well-behaved client of documentation sites:
 
-- **Scoped network access** — fetches are restricted to
-  `https://lean-lang.org/doc/reference/`, enforced on the request URL *and* the
-  final post-redirect URL. Path traversal (`..`, `%2e%2e`, backslash variants)
-  is rejected.
-- **Rate limiting** — a token bucket caps outbound requests (default 2 req/s,
-  burst 5); a hit falls back to cached content rather than hammering the origin.
-- **Caching & revalidation** — `xref.json` and pages are cached on disk (24 h
-  TTL) with `ETag`/`If-None-Match` conditional revalidation, so a repeated
-  lookup costs at most a `304 Not Modified`.
+- **Scoped network access** — fetches are restricted to the *configured site
+  roots*; the site list doubles as the allowlist. Enforced on the request URL
+  *and* the final post-redirect URL, so a same-host URL outside a configured
+  root is still refused. Path traversal (`..`, `%2e%2e`, backslash variants) is
+  rejected.
+- **Rate limiting** — a shared token bucket caps outbound requests across all
+  sites (default 2 req/s, burst 5); a hit falls back to cached content rather
+  than hammering the origin.
+- **Caching & revalidation** — `xref.json` and pages are cached on disk per
+  site (24 h TTL) with `ETag`/`If-None-Match` conditional revalidation, so a
+  repeated lookup costs at most a `304 Not Modified`.
 - **Bounded responses** — HTTP bodies are streamed with an 8 MB cap; Markdown
-  output is capped at 200 KB; the page cache is LRU-evicted at 200 MB.
+  output is capped at 200 KB; each site's page cache is LRU-evicted at 200 MB.
 - **Identifying `User-Agent`** on every request.
 
 ## Evaluation
 
 `evaluation.xml` is a 10-question evaluation suite in the format used by
-Anthropic's `mcp-builder` skill. Every question is read-only, independent, and
-has a single stable, verifiable answer; collectively they exercise `search`
-ranking/pagination and `fetch_page` anchor extraction.
+Anthropic's `mcp-builder` skill. The questions target the default site (the
+Lean Language Reference); each is read-only, independent, and has a single
+stable, verifiable answer.
 
-## Roadmap
+## Limitations & ideas
 
-The goal is a **generic Verso documentation MCP**: point it at any Verso
-Manual-genre site and get the same tools. Planned work:
-
-1. **Site registry** — accept one or more Verso site roots via configuration
-   (environment variable or launch args), each with an optional short alias.
-2. **Per-site indexing** — fetch and cache each site's `xref.json` and build its
-   entry index independently; cache directories namespaced per site.
-3. **Dynamic kinds** — derive entry kinds and human-readable labels from each
-   `xref.json`'s domain blocks (their `title` fields) instead of a hardcoded
-   table, so project-specific domains are picked up automatically.
-4. **Site selector** — tools gain an optional `site` argument (alias or URL),
-   and a `list_sites` tool enumerates the configured sites.
-5. **Allowlist & rebrand** — outbound fetches restricted to the configured site
-   roots (preserving today's SSRF protections); server and tool names move from
-   `lean-reference` to `verso`.
-
-No upstream Verso changes are required: `xref.json` is already a published
-artifact, and Verso's own on-site search consumes it the same way. An optional
-future contribution could be a documented, versioned schema for `xref.json`,
-which is currently undocumented.
+- Works with Verso **Manual**-genre sites (those that publish `xref.json`).
+  Blog-genre sites have no `xref.json`. Tutorial-genre sites also emit one and
+  should work, but are untested.
+- `search` is **name-based** — it matches entry names and titles in the
+  cross-reference index, the same granularity as Verso's own on-site search. It
+  does not do full-text search of page bodies.
+- The `xref.json` schema is an undocumented Verso internal; it may shift between
+  Verso releases. A useful upstream contribution would be a documented,
+  versioned schema for it.
 
 ## License
 

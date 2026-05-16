@@ -10,23 +10,35 @@
 # ///
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 N. V. Lang
-"""MCP server for the Lean Language Reference (https://lean-lang.org/doc/reference/latest/).
+"""MCP server for Verso-generated documentation sites.
 
-Indexes the manual's published `xref.json` (cross-reference index) so an agent can:
-  * `search`     — find tactics, terms, sections, options, etc. by name (paginated)
-  * `list_kinds` — enumerate the indexed entry kinds with counts
-  * `fetch_page` — fetch a manual page (or a single `#anchor` entry) as Markdown
+Verso (https://github.com/leanprover/verso) is Lean's documentation authoring
+tool. Every Verso *Manual*-genre site publishes a machine-readable
+cross-reference index, `xref.json`, at its root. This server consumes that
+index plus the rendered HTML — no changes to Verso or the site are needed — and
+exposes:
 
-Every tool accepts `response_format` ("markdown" default, or "json" for structured output).
+  * `list_sites`  — enumerate the configured Verso sites
+  * `list_kinds`  — entry kinds for a site (tactics, terms, sections, …), with counts
+  * `search`      — name-ranked search over a site's cross-reference index (paginated)
+  * `fetch_page`  — fetch a page (or a single `#anchor` entry) as Markdown
+
+Configure sites via the `VERSO_MCP_SITES` environment variable, a comma-separated
+list of `alias=url` pairs (a bare URL gets an auto-derived alias). When unset,
+the server defaults to the Lean Language Reference.
+
+  VERSO_MCP_SITES="lean-reference=https://lean-lang.org/doc/reference/latest/,
+                   fpil=https://lean-lang.org/functional_programming_in_lean/"
 
 Hardening (assumes a possibly-hostile or confused agent driving these tools):
-  * all network access restricted to https://lean-lang.org/doc/reference/ — enforced on
-    the request URL AND the post-redirect response URL;
-  * URL allowlist rejects path traversal in any encoding (`..`, `%2e%2e`, `..\\`, …);
-  * responses streamed with an 8 MB cap (defuses decompression bombs);
-  * outbound requests gated by a token-bucket rate limiter (default 2 req/s, burst 5);
-  * page cache bounded by 200 MB LRU eviction; conditional revalidation via ETag/304;
-  * Markdown output capped at 200 KB with a clear truncation marker.
+  * network access is restricted to the configured site roots — enforced on the
+    request URL AND the post-redirect response URL; the configured site list IS
+    the allowlist;
+  * the URL check rejects path traversal in any encoding (`..`, `%2e%2e`, `..\\`);
+  * responses are streamed with an 8 MB cap (defuses decompression bombs);
+  * outbound requests are gated by a shared token-bucket rate limiter;
+  * each site's cache is bounded by 200 MB LRU eviction; ETag/304 revalidation;
+  * Markdown output is capped at 200 KB with a clear truncation marker.
 
 Run standalone for a smoke check:  uv run --script server.py --smoke
 Run as MCP stdio server:           uv run --script server.py
@@ -45,7 +57,7 @@ import re
 import sys
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any
@@ -58,26 +70,22 @@ from pydantic import Field
 
 # --------------------------------------------------------------------- constants
 
-REF_ROOT = "https://lean-lang.org/doc/reference/latest"
-XREF_URL = f"{REF_ROOT}/xref.json"
 CACHE_DIR = Path(
-    os.environ.get(
-        "LEAN_REF_MCP_CACHE",
-        str(Path.home() / ".cache" / "lean-reference-mcp"),
-    )
+    os.environ.get("VERSO_MCP_CACHE", str(Path.home() / ".cache" / "verso-mcp"))
 )
-XREF_CACHE = CACHE_DIR / "xref.json"
-PAGE_CACHE_DIR = CACHE_DIR / "pages"
 XREF_TTL_SECONDS = 24 * 3600
 PAGE_TTL_SECONDS = 24 * 3600
-MAX_RESPONSE_BYTES = 8 * 1024 * 1024        # cap any single HTTP body (xref is ~3 MB)
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024        # cap any single HTTP body
 MAX_MARKDOWN_BYTES = 200 * 1024             # cap Markdown returned to the agent
 MAX_ANCHOR_HTML_BYTES = 80 * 1024           # cap anchor-extraction fallback
-MAX_PAGE_CACHE_BYTES = 200 * 1024 * 1024    # LRU-evict the page cache above this size
-USER_AGENT = "lean-reference-mcp/0.2 (+local; uv-run)"
+MAX_PAGE_CACHE_BYTES = 200 * 1024 * 1024    # LRU-evict a site's page cache above this
+USER_AGENT = "verso-mcp/0.3 (+local; uv-run)"
 ALLOWED_CONTENT_TYPES = frozenset({"text/html", "application/json"})
 
-log = logging.getLogger("lean-reference-mcp")
+# Used when VERSO_MCP_SITES is unset or yields no usable entries.
+DEFAULT_SITE_SPEC = "lean-reference=https://lean-lang.org/doc/reference/latest/"
+
+log = logging.getLogger("verso-mcp")
 
 
 def _read_float_env(name: str, default: float, *, allow_zero: bool = False) -> float:
@@ -103,38 +111,11 @@ def _read_float_env(name: str, default: float, *, allow_zero: bool = False) -> f
     return val
 
 
-# Outbound-request rate limit (token bucket). Defaults stay well below anything a
-# polite scraper would do; a full corpus walk of the ~30 chapter pages still
-# completes in ~15 s without queueing. Overridable via env.
-RATE_BURST = _read_float_env("LEAN_REF_MCP_RATE_BURST", 5.0)
-RATE_REFILL_PER_SEC = _read_float_env("LEAN_REF_MCP_RATE_PER_SEC", 2.0)
-RATE_MAX_WAIT_SEC = _read_float_env("LEAN_REF_MCP_RATE_MAX_WAIT", 3.0, allow_zero=True)
-
-# Verso domain key -> (friendly kind, human-readable label).
-# `Verso.Genre.Manual.example` and `Manual.examples` are intentionally omitted:
-# their schemas are awkward and the entries don't carry useful identifiers.
-KIND_MAP: dict[str, tuple[str, str]] = {
-    "Verso.Genre.Manual.doc.tactic":      ("tactic",          "Tactic"),
-    "Verso.Genre.Manual.doc.tactic.conv": ("conv-tactic",     "Conversion tactic"),
-    "Verso.Genre.Manual.doc":             ("term",            "Lean constant"),
-    "Verso.Genre.Manual.doc.tech":        ("glossary",        "Glossary term"),
-    "Verso.Genre.Manual.doc.option":      ("option",          "Compiler option"),
-    "Verso.Genre.Manual.doc.syntaxKind":  ("syntax-kind",     "Syntax kind"),
-    "Verso.Genre.Manual.doc.suggestion":  ("suggestion",      "Search suggestion"),
-    "Verso.Genre.Manual.section":         ("section",         "Manual section"),
-    "Manual.Syntax.production":           ("syntax",          "Syntax production"),
-    "Manual.errorExplanation":            ("error",           "Error explanation"),
-    "Manual.envVar":                      ("envvar",          "Environment variable"),
-    "Manual.configFile":                  ("config-file",     "Configuration file"),
-    "Manual.parserAlias":                 ("parser-alias",    "Parser alias"),
-    "Manual.lakeCommand":                 ("lake-cmd",        "Lake command"),
-    "Manual.lakeOpt":                     ("lake-opt",        "Lake option"),
-    "Manual.lakeTomlTable":               ("lake-toml-table", "Lake TOML table"),
-    "Manual.lakeTomlField":               ("lake-toml-field", "Lake TOML field"),
-    "Manual.elanCommand":                 ("elan-cmd",        "Elan command"),
-    "Manual.elanOpt":                     ("elan-opt",        "Elan option"),
-}
-KINDS = {kind for kind, _ in KIND_MAP.values()}
+# Outbound-request rate limit (token bucket), shared across all sites so the
+# server stays a polite client of every origin. Overridable via env.
+RATE_BURST = _read_float_env("VERSO_MCP_RATE_BURST", 5.0)
+RATE_REFILL_PER_SEC = _read_float_env("VERSO_MCP_RATE_PER_SEC", 2.0)
+RATE_MAX_WAIT_SEC = _read_float_env("VERSO_MCP_RATE_MAX_WAIT", 3.0, allow_zero=True)
 
 
 class ResponseFormat(str, Enum):
@@ -144,9 +125,87 @@ class ResponseFormat(str, Enum):
     JSON = "json"
 
 
+# --------------------------------------------------------------------- site registry
+
+@dataclass(frozen=True)
+class Site:
+    """A configured Verso documentation site."""
+
+    alias: str   # short selector, e.g. "lean-reference"
+    root: str    # normalized site root URL, always ends with "/"
+
+    @property
+    def xref_url(self) -> str:
+        return self.root + "xref.json"
+
+    @property
+    def cache_dir(self) -> Path:
+        digest = hashlib.sha256(self.root.encode("utf-8")).hexdigest()[:16]
+        return CACHE_DIR / f"site-{digest}"
+
+
+def _normalize_root(url: str) -> str:
+    """Normalize a site root: require https, lowercase host, ensure trailing slash."""
+    url = url.strip()
+    if url.lower().startswith("http://"):
+        raise ValueError(f"site root must use https://: {url!r}")
+    if not url.lower().startswith("https://"):
+        raise ValueError(f"site root must be an absolute https:// URL: {url!r}")
+    p = urlparse(url)
+    if not p.netloc:
+        raise ValueError(f"site root has no host: {url!r}")
+    path = p.path if p.path.endswith("/") else p.path + "/"
+    return f"https://{p.netloc.lower()}{path}"
+
+
+def _alias_from_url(url: str) -> str:
+    """Derive a short alias from a site URL (last meaningful path segment)."""
+    p = urlparse(url)
+    segs = [s for s in p.path.split("/") if s]
+    chosen = next((s for s in reversed(segs) if s not in ("latest", "doc", "docs")), None)
+    chosen = chosen or (segs[-1] if segs else p.netloc.split(".")[0])
+    return re.sub(r"[^a-z0-9]+", "-", chosen.lower()).strip("-") or "site"
+
+
+def _parse_sites(spec: str) -> dict[str, Site]:
+    """Parse a `VERSO_MCP_SITES`-style spec into an ordered {alias: Site} map."""
+    sites: dict[str, Site] = {}
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" in item:
+            raw_alias, _, raw_url = item.partition("=")
+        else:
+            raw_alias, raw_url = "", item
+        try:
+            root = _normalize_root(raw_url)
+        except ValueError as exc:
+            print(f"warning: skipping invalid VERSO_MCP_SITES entry — {exc}", file=sys.stderr)
+            continue
+        alias = re.sub(r"\s+", "-", raw_alias.strip().lower()) or _alias_from_url(root)
+        base, n = alias, 2
+        while alias in sites:
+            alias = f"{base}-{n}"
+            n += 1
+        sites[alias] = Site(alias=alias, root=root)
+    return sites
+
+
+_sites_spec = os.environ.get("VERSO_MCP_SITES", "").strip()
+SITES: dict[str, Site] = _parse_sites(_sites_spec) if _sites_spec else {}
+if not SITES:
+    if _sites_spec:
+        print("warning: VERSO_MCP_SITES had no usable entries; using the default site", file=sys.stderr)
+    SITES = _parse_sites(DEFAULT_SITE_SPEC)
+DEFAULT_ALIAS = next(iter(SITES))
+
+
+# --------------------------------------------------------------------- entry model
+
 @dataclass(frozen=True)
 class Entry:
-    kind: str            # friendly kind (e.g. "tactic")
+    kind: str            # friendly kind slug (e.g. "tactic")
     name: str            # canonical key from xref `contents`
     display: str         # userName / term / title — what a human types/reads
     url: str             # absolute URL with anchor
@@ -154,8 +213,15 @@ class Entry:
     context: str | None  # parent breadcrumb (e.g. "Tactic Proofs > Tactic Reference")
 
 
+@dataclass
+class SiteIndex:
+    """A site's loaded cross-reference index."""
+
+    entries: list[Entry]
+    kinds: dict[str, str] = field(default_factory=dict)  # kind slug -> human label
+
+
 def _entry_to_dict(e: Entry) -> dict[str, Any]:
-    """Structured form of an Entry for JSON responses."""
     d: dict[str, Any] = {"kind": e.kind, "name": e.name, "display": e.display, "url": e.url}
     if e.section:
         d["section"] = e.section.rstrip(".")
@@ -176,16 +242,27 @@ def _http() -> httpx.AsyncClient:
             "Accept-Encoding": "gzip, deflate",
         },
         timeout=httpx.Timeout(30.0, connect=10.0),
-        follow_redirects=True,  # post-fetch host check below keeps us in scope
+        follow_redirects=True,  # post-fetch scope check below keeps us in bounds
     )
 
 
-def _check_response_in_scope(final_url: str) -> None:
-    """After a request (incl. redirects), require the final URL on lean-lang.org/doc/reference/."""
-    p = urlparse(final_url)
-    # Host comparison is case-insensitive per RFC 3986 §3.2.2 (urlparse only lowercases scheme).
-    if p.scheme != "https" or p.netloc.lower() != "lean-lang.org" or not p.path.startswith("/doc/reference/"):
-        raise RuntimeError(f"refusing response from out-of-scope URL: {final_url}")
+def _site_for_url(url: str) -> Site | None:
+    """Return the configured Site whose root contains `url`, else None.
+
+    This is the SSRF allowlist: only URLs under a configured site root pass.
+    Host comparison is case-insensitive (RFC 3986 §3.2.2).
+    """
+    p = urlparse(url.split("#", 1)[0])
+    if p.scheme != "https":
+        return None
+    host = p.netloc.lower()
+    for site in SITES.values():
+        sp = urlparse(site.root)
+        if host == sp.netloc.lower() and (
+            p.path == sp.path.rstrip("/") or p.path.startswith(sp.path)
+        ):
+            return site
+    return None
 
 
 # --------------------------------------------------------------------- rate limit
@@ -194,9 +271,9 @@ class _RateLimited(RuntimeError):
     """Raised when the outbound token bucket can't be replenished within the deadline."""
 
 
-# Token-bucket state. The critical section (refill + check + decrement) contains no
-# `await`, so under asyncio's single-threaded cooperative scheduling it is atomic
-# across concurrent callers — no lock needed.
+# Token-bucket state. The critical section (refill + check + decrement) contains
+# no `await`, so under asyncio's single-threaded scheduling it is atomic across
+# concurrent callers — no lock needed.
 _rate_tokens: float = RATE_BURST
 _rate_last_refill: float = time.monotonic()
 _rate_rejected_count = 0
@@ -241,8 +318,8 @@ async def _cached_get(url: str, cache_path: Path, ttl_seconds: int) -> tuple[byt
     """Fetch `url` with disk cache + ETag revalidation, streamed with a byte cap.
 
     Returns (body_bytes, source); source is "cache" / "revalidated" / "fresh" / "stale".
-    Raises RuntimeError on out-of-scope redirects, unexpected content-type, body over
-    MAX_RESPONSE_BYTES, or unrecoverable network failure.
+    Raises RuntimeError on out-of-scope redirects, unexpected content-type, body
+    over MAX_RESPONSE_BYTES, or unrecoverable network failure.
     """
     meta_path = cache_path.with_suffix(cache_path.suffix + ".meta")
 
@@ -279,7 +356,8 @@ async def _cached_get(url: str, cache_path: Path, ttl_seconds: int) -> tuple[byt
                     pass
                 return cached_body, "revalidated"
             resp.raise_for_status()
-            _check_response_in_scope(str(resp.url))
+            if _site_for_url(str(resp.url)) is None:
+                raise RuntimeError(f"refusing response from out-of-scope URL: {resp.url}")
             ct = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
             if ct and ct not in ALLOWED_CONTENT_TYPES:
                 raise RuntimeError(f"refusing unexpected content-type: {ct!r}")
@@ -323,18 +401,16 @@ async def _cached_get(url: str, cache_path: Path, ttl_seconds: int) -> tuple[byt
             meta_path.unlink()
         except OSError:
             pass
-    if cache_path.parent == PAGE_CACHE_DIR:
-        _enforce_page_cache_budget()
     return body, "fresh"
 
 
-def _enforce_page_cache_budget() -> None:
-    """If total size of PAGE_CACHE_DIR exceeds MAX_PAGE_CACHE_BYTES, LRU-evict oldest files."""
-    if not PAGE_CACHE_DIR.exists():
+def _enforce_page_cache_budget(pages_dir: Path) -> None:
+    """If a site's page cache exceeds MAX_PAGE_CACHE_BYTES, LRU-evict oldest files."""
+    if not pages_dir.exists():
         return
     entries: list[tuple[float, int, Path]] = []
     total = 0
-    for p in PAGE_CACHE_DIR.iterdir():
+    for p in pages_dir.iterdir():
         if not p.is_file() or p.name.endswith(".tmp"):
             continue
         try:
@@ -362,30 +438,67 @@ def _enforce_page_cache_budget() -> None:
                 pass
 
 
-# --------------------------------------------------------------------- xref loading
+# --------------------------------------------------------------------- index building
 
-async def _load_xref() -> dict[str, Any]:
-    """Load and parse xref.json, recovering from a corrupt cache if necessary."""
-    body, _ = await _cached_get(XREF_URL, XREF_CACHE, XREF_TTL_SECONDS)
+async def _load_xref(site: Site) -> Any:
+    """Load and parse a site's xref.json, recovering from a corrupt cache."""
+    xref_cache = site.cache_dir / "xref.json"
+    body, _ = await _cached_get(site.xref_url, xref_cache, XREF_TTL_SECONDS)
     try:
         return json.loads(body)
     except json.JSONDecodeError:
-        # Cache is corrupt — drop it and try once more from the network.
-        for p in (XREF_CACHE, XREF_CACHE.with_suffix(XREF_CACHE.suffix + ".meta")):
+        for p in (xref_cache, xref_cache.with_suffix(xref_cache.suffix + ".meta")):
             try:
                 p.unlink()
             except FileNotFoundError:
                 pass
-        body, _ = await _cached_get(XREF_URL, XREF_CACHE, XREF_TTL_SECONDS)
+        body, _ = await _cached_get(site.xref_url, xref_cache, XREF_TTL_SECONDS)
         return json.loads(body)
 
 
-def _build_entries(xref: dict[str, Any]) -> list[Entry]:
-    out: list[Entry] = []
-    for domain, (kind, _) in KIND_MAP.items():
-        block = xref.get(domain) or {}
-        contents = block.get("contents") or {}
-        for name, raw in contents.items():
+def _domain_slug(domain_key: str) -> str:
+    """Derive a short kebab-case kind slug from a Verso domain key.
+
+    e.g. 'Verso.Genre.Manual.doc.tactic' -> 'tactic',
+         'Manual.lakeCommand' -> 'lake-command'.
+    """
+    last = domain_key.rsplit(".", 1)[-1]
+    kebab = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", last)
+    kebab = re.sub(r"[^a-zA-Z0-9]+", "-", kebab).strip("-").lower()
+    return kebab or "misc"
+
+
+def _build_index(site: Site, xref: Any) -> SiteIndex:
+    """Build a SiteIndex from a parsed xref.json.
+
+    Kinds are derived dynamically: every top-level domain becomes a kind, slugged
+    from its key and labelled from its `title`. Domains with no usable entries are
+    omitted. This means the server works on any Verso Manual-genre site, including
+    project-specific domains it has never seen.
+    """
+    if not isinstance(xref, dict):
+        raise RuntimeError(f"{site.xref_url} is not a JSON object (not a Verso xref.json?)")
+
+    entries: list[Entry] = []
+    labels: dict[str, str] = {}
+    used_slugs: set[str] = set()
+    root = site.root.rstrip("/")
+
+    for domain_key, block in xref.items():
+        if not isinstance(block, dict):
+            continue
+        slug = _domain_slug(domain_key)
+        base, n = slug, 2
+        while slug in used_slugs:
+            slug = f"{base}-{n}"
+            n += 1
+        used_slugs.add(slug)
+        title = block.get("title")
+        labels[slug] = (
+            title if isinstance(title, str) and title and title != domain_key
+            else slug.replace("-", " ")
+        )
+        for name, raw in (block.get("contents") or {}).items():
             items = raw if isinstance(raw, list) else [raw]
             for item in items:
                 if not isinstance(item, dict):
@@ -411,15 +524,46 @@ def _build_entries(xref: dict[str, Any]) -> list[Entry]:
                     titles = [t for t in titles if t]
                     if titles:
                         context = " > ".join(titles)
-                out.append(Entry(
-                    kind=kind,
-                    name=name,
+                page = addr if str(addr).startswith("http") else root + "/" + str(addr).lstrip("/")
+                entries.append(Entry(
+                    kind=slug,
+                    name=str(name),
                     display=str(display),
-                    url=f"{REF_ROOT}{addr}#{anchor}",
+                    url=f"{page}#{anchor}",
                     section=section,
                     context=context,
                 ))
-    return out
+
+    present = {e.kind for e in entries}
+    kinds = {slug: labels[slug] for slug in labels if slug in present}
+    return SiteIndex(entries=entries, kinds=kinds)
+
+
+_indexes: dict[str, SiteIndex] = {}
+_index_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(alias: str) -> asyncio.Lock:
+    lock = _index_locks.get(alias)
+    if lock is None:
+        lock = _index_locks[alias] = asyncio.Lock()
+    return lock
+
+
+async def ensure_index(site: Site) -> SiteIndex:
+    """Return a site's index, loading and caching xref.json on first use.
+
+    Guarded by a per-site lock so concurrent tool calls trigger at most one load.
+    """
+    cached = _indexes.get(site.alias)
+    if cached is not None:
+        return cached
+    async with _lock_for(site.alias):
+        cached = _indexes.get(site.alias)
+        if cached is None:
+            cached = _build_index(site, await _load_xref(site))
+            _indexes[site.alias] = cached
+    return cached
 
 
 # --------------------------------------------------------------------- scoring
@@ -444,51 +588,95 @@ def _score(entry: Entry, q_lower: str) -> int:
     return s
 
 
+def search_index(
+    index: SiteIndex, query: str, kind: str | None, limit: int, offset: int
+) -> tuple[list[Entry], int]:
+    """Return (page_of_hits, total_match_count) for a scored search over one site."""
+    q_lower = query.strip().lower()
+    if not q_lower:
+        return [], 0
+    entries = index.entries
+    if kind:
+        k = kind.strip().lower()
+        if k not in index.kinds:
+            if k.endswith("s") and k[:-1] in index.kinds:
+                k = k[:-1]  # forgive a plural ("tactics" -> "tactic")
+            else:
+                valid = ", ".join(sorted(index.kinds)) or "(none)"
+                raise ValueError(f"unknown kind {kind!r}; valid kinds for this site: {valid}")
+        entries = [e for e in entries if e.kind == k]
+    ranked = sorted(
+        ((e, _score(e, q_lower)) for e in entries),
+        key=lambda es: (-es[1], len(es[0].name), es[0].name),
+    )
+    ranked = [es for es in ranked if es[1] > 0]
+    total = len(ranked)
+    page = [e for e, _ in ranked[offset:offset + limit]]
+    return page, total
+
+
+def _format_hit(e: Entry) -> str:
+    head = f"- [{e.kind}] {e.display} — {e.url}"
+    tail_bits: list[str] = []
+    if e.section:
+        tail_bits.append(f"§{e.section.rstrip('.')}")
+    if e.context and e.kind != "section":
+        tail_bits.append(e.context)
+    if tail_bits:
+        head += f"  ({'; '.join(tail_bits)})"
+    if e.display != e.name:
+        head += f"\n    canonical: {e.name}"
+    return head
+
+
 # --------------------------------------------------------------------- URL safety
 
 def _path_has_traversal(path: str) -> bool:
-    """True iff `path` decodes to anything containing `.` or `..` segments.
-
-    Percent-decoded once because servers will; backslashes folded to forward
-    slashes because some normalizers treat them as separators.
-    """
+    """True iff `path` decodes to anything containing `.` or `..` segments."""
     decoded = unquote(path).replace("\\", "/")
     return any(seg in (".", "..") for seg in decoded.split("/"))
 
 
-def _resolve_ref_url(url_or_path: str) -> tuple[str, str]:
-    """Resolve a user-supplied URL or site-relative path to (absolute_url, anchor).
+def _resolve_site(alias: str | None) -> Site:
+    """Resolve a site alias (or None for the default) to a Site."""
+    if not alias or not alias.strip():
+        return SITES[DEFAULT_ALIAS]
+    key = alias.strip().lower()
+    if key in SITES:
+        return SITES[key]
+    raise ValueError(
+        f"unknown site {alias!r}; configured sites: {', '.join(sorted(SITES))}"
+    )
 
-    Refuses anything that isn't `https://lean-lang.org/doc/reference/…` or that
-    contains path-traversal segments in any encoding we recognize.
+
+def _resolve_page_url(url_or_path: str, default_site: Site) -> tuple[str, str, Site]:
+    """Resolve a URL or site-relative path to (absolute_url, anchor, owning_site).
+
+    Absolute URLs must fall under a configured site root. Relative paths resolve
+    against `default_site`. Plain http://, off-site URLs, and path traversal
+    (`..`, `%2e%2e`, backslash variants) are rejected.
     """
     raw = url_or_path.strip()
     if not raw:
         raise ValueError("empty URL")
-    if "#" in raw:
-        loc, anchor = raw.split("#", 1)
-    else:
-        loc, anchor = raw, ""
+    loc, _, anchor = raw.partition("#")
     if loc.lower().startswith("http://"):
         raise ValueError(f"refusing plain-http URL, use https://: {loc!r}")
     if loc.lower().startswith("https://"):
         url = loc
     else:
-        url = REF_ROOT.rstrip("/") + "/" + loc.lstrip("/")
-    p = urlparse(url)
-    # Host comparison is case-insensitive per RFC 3986 §3.2.2 (urlparse only lowercases scheme).
-    if p.scheme != "https" or p.netloc.lower() != "lean-lang.org":
-        raise ValueError(f"refusing URL outside https://lean-lang.org: {loc!r}")
-    if not p.path.startswith("/doc/reference/"):
-        raise ValueError(f"refusing URL outside the Lean Reference: {loc!r}")
-    if _path_has_traversal(p.path):
+        url = default_site.root + loc.lstrip("/")
+    site = _site_for_url(url)
+    if site is None:
+        raise ValueError(f"refusing URL outside the configured Verso sites: {loc!r}")
+    if _path_has_traversal(urlparse(url).path):
         raise ValueError(f"refusing URL with traversal segments: {loc!r}")
-    return url, anchor
+    return url, anchor, site
 
 
-def _page_cache_path(url: str) -> Path:
+def _page_cache_path(site: Site, url: str) -> Path:
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
-    return PAGE_CACHE_DIR / f"{digest}.html"
+    return site.cache_dir / "pages" / f"{digest}.html"
 
 
 # --------------------------------------------------------------------- HTML helpers
@@ -506,12 +694,11 @@ def _make_h2t() -> html2text.HTML2Text:
 def _extract_anchor_element(html: str, anchor: str) -> str:
     """Return the single HTML element bearing id="anchor", balanced by tag depth.
 
-    The Lean manual wraps each anchorable entry in an element with an `id` —
-    `<section>` for chapter sections, `<div class="namedocs">` for individual
-    tactic/term docs, etc. We balance opens/closes of *that* element's tag so a
-    `#anchor` request returns exactly one entry, not its neighbours. Falls back
-    to a bounded byte slice if the markup can't be balanced, or to the whole
-    page if the anchor isn't found.
+    Verso wraps each anchorable entry in an element with an `id` — `<section>`
+    for chapter sections, `<div class="namedocs">` for individual entries, etc.
+    Balancing opens/closes of that element's tag keeps a `#anchor` request to one
+    entry. Falls back to a bounded slice on unbalanced markup, or the whole page
+    if the anchor isn't found.
     """
     m = re.search(rf'<(\w+)\b[^>]*\bid="{re.escape(anchor)}"', html, re.I)
     if not m:
@@ -534,7 +721,6 @@ def _extract_anchor_element(html: str, anchor: str) -> str:
         else:           # opening tag
             depth += 1
         pos = t.end()
-    # Unbalanced markup (or a void element) — bounded fallback.
     return html[m.start():m.start() + MAX_ANCHOR_HTML_BYTES]
 
 
@@ -553,65 +739,6 @@ def _error(message: str, fmt: ResponseFormat) -> str:
     return message
 
 
-# --------------------------------------------------------------------- index cache
-
-_ENTRIES: list[Entry] | None = None
-_index_lock = asyncio.Lock()
-
-
-async def ensure_index() -> list[Entry]:
-    """Return the in-memory entry index, loading xref.json on first use.
-
-    Guarded by a lock so concurrent tool calls trigger at most one network load.
-    """
-    global _ENTRIES
-    if _ENTRIES is not None:
-        return _ENTRIES
-    async with _index_lock:
-        if _ENTRIES is None:  # re-check inside the lock
-            _ENTRIES = _build_entries(await _load_xref())
-    return _ENTRIES
-
-
-# --------------------------------------------------------------------- core search
-
-async def search_entries(
-    query: str, kind: str | None, limit: int, offset: int
-) -> tuple[list[Entry], int]:
-    """Return (page_of_hits, total_match_count) for a scored search."""
-    q_lower = query.strip().lower()
-    if not q_lower:
-        return [], 0
-    entries = await ensure_index()
-    if kind:
-        k = kind.strip().lower().rstrip("s")  # forgive "tactics" → "tactic"
-        if k not in KINDS:
-            raise ValueError(f"unknown kind {kind!r}; try one of: {', '.join(sorted(KINDS))}")
-        entries = [e for e in entries if e.kind == k]
-    scored = [(e, _score(e, q_lower)) for e in entries]
-    ranked = sorted(
-        (es for es in scored if es[1] > 0),
-        key=lambda es: (-es[1], len(es[0].name), es[0].name),
-    )
-    total = len(ranked)
-    page = [e for e, _ in ranked[offset:offset + limit]]
-    return page, total
-
-
-def _format_hit(e: Entry) -> str:
-    head = f"- [{e.kind}] {e.display} — {e.url}"
-    tail_bits: list[str] = []
-    if e.section:
-        tail_bits.append(f"§{e.section.rstrip('.')}")
-    if e.context and e.kind != "section":
-        tail_bits.append(e.context)
-    if tail_bits:
-        head += f"  ({'; '.join(tail_bits)})"
-    if e.display != e.name:
-        head += f"\n    canonical: {e.name}"
-    return head
-
-
 # --------------------------------------------------------------------- MCP server
 
 @asynccontextmanager
@@ -624,72 +751,128 @@ async def _lifespan(_server: FastMCP):
             await _http().aclose()
 
 
-mcp = FastMCP("lean-reference", lifespan=_lifespan)
+mcp = FastMCP("verso", lifespan=_lifespan)
 
 _READONLY_ANNOTATIONS = {
     "readOnlyHint": True,
     "destructiveHint": False,
     "idempotentHint": True,
-    "openWorldHint": True,  # data ultimately comes from the live lean-lang.org site
+    "openWorldHint": True,  # data comes from live Verso documentation sites
 }
 
+_SITE_FIELD = Field(
+    description="Which configured Verso site to use — an alias from `list_sites`. "
+                "Omit to use the default site.",
+)
 
-@mcp.tool(annotations={"title": "List Lean Reference entry kinds", **_READONLY_ANNOTATIONS})
-async def list_kinds(
+
+@mcp.tool(annotations={"title": "List configured Verso sites", **_READONLY_ANNOTATIONS})
+async def list_sites(
     response_format: Annotated[
         ResponseFormat, Field(description="'markdown' (human-readable) or 'json' (structured)")
     ] = ResponseFormat.MARKDOWN,
 ) -> str:
-    """List the kinds of entries indexed from the Lean Language Reference, with counts.
+    """List the Verso documentation sites this server is configured to serve.
 
-    Use the returned `kind` values to filter `search` (e.g. kind="tactic"). This is a
-    read-only lookup over the manual's cross-reference index; it makes no changes.
+    Each site has an `alias` — pass it as the `site` argument to `search`,
+    `list_kinds`, or `fetch_page` to target that site. Sites are configured via
+    the `VERSO_MCP_SITES` environment variable. Read-only.
 
     Args:
-        response_format: "markdown" for a human-readable table (default), or "json"
-            for a structured object.
+        response_format: "markdown" (default) or "json".
 
     Returns:
-        markdown: a text table of `kind`, count, and description.
-        json: {"reference_root": str, "total_entries": int,
-               "kinds": [{"kind": str, "count": int, "description": str}, ...]}
+        markdown: one line per site (alias, default marker, root URL).
+        json: {"default": str, "sites": [{"alias","root","indexed"}, ...]}
     """
-    entries = await ensure_index()
+    rows = []
+    for alias, site in SITES.items():
+        rows.append({
+            "alias": alias,
+            "root": site.root,
+            "indexed": alias in _indexes,
+            "default": alias == DEFAULT_ALIAS,
+        })
+    if response_format is ResponseFormat.JSON:
+        return json.dumps({"default": DEFAULT_ALIAS, "sites": rows}, indent=2, ensure_ascii=False)
+    width = max((len(r["alias"]) for r in rows), default=0)
+    lines = [f"{len(rows)} configured Verso site(s):"]
+    for r in rows:
+        mark = "  [default]" if r["default"] else "           "
+        lines.append(f"  {r['alias']:<{width}}{mark}  {r['root']}")
+    lines.append("\nPass `site=<alias>` to `search`, `list_kinds`, or `fetch_page`.")
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations={"title": "List a Verso site's entry kinds", **_READONLY_ANNOTATIONS})
+async def list_kinds(
+    site: Annotated[str | None, _SITE_FIELD] = None,
+    response_format: Annotated[
+        ResponseFormat, Field(description="'markdown' (human-readable) or 'json' (structured)")
+    ] = ResponseFormat.MARKDOWN,
+) -> str:
+    """List the kinds of entries indexed for a Verso site, with counts.
+
+    Kinds are derived from the site's cross-reference index — they vary per site
+    (a language reference has tactics and options; a textbook has sections and
+    terms). Use the returned `kind` values to filter `search`. Read-only.
+
+    Args:
+        site: which configured site (alias from `list_sites`); omit for the default.
+        response_format: "markdown" (default) or "json".
+
+    Returns:
+        markdown: a table of `kind`, count, and human-readable description.
+        json: {"site": str, "root": str, "total_entries": int,
+               "kinds": [{"kind","count","description"}, ...]}
+    """
+    try:
+        s = _resolve_site(site)
+    except ValueError as exc:
+        return _error(str(exc), response_format)
+    try:
+        index = await ensure_index(s)
+    except (httpx.HTTPError, RuntimeError) as exc:
+        return _error(f"Failed to load index for site '{s.alias}': {exc}", response_format)
+
     counts: dict[str, int] = {}
-    for e in entries:
+    for e in index.entries:
         counts[e.kind] = counts.get(e.kind, 0) + 1
-    labels = {kind: label for _, (kind, label) in KIND_MAP.items()}
-    ordered = sorted(counts, key=lambda k: (-counts[k], k))
+    ordered = sorted(index.kinds, key=lambda k: (-counts.get(k, 0), k))
 
     if response_format is ResponseFormat.JSON:
         return json.dumps(
             {
-                "reference_root": REF_ROOT,
-                "total_entries": sum(counts.values()),
+                "site": s.alias,
+                "root": s.root,
+                "total_entries": len(index.entries),
                 "kinds": [
-                    {"kind": k, "count": counts[k], "description": labels[k]} for k in ordered
+                    {"kind": k, "count": counts.get(k, 0), "description": index.kinds[k]}
+                    for k in ordered
                 ],
             },
             indent=2,
             ensure_ascii=False,
         )
-    rows = [f"  {k:<17s} {counts[k]:>5d}  {labels[k]}" for k in ordered]
+    width = max((len(k) for k in ordered), default=4)
+    rows = [f"  {k:<{width}}  {counts.get(k, 0):>5d}  {index.kinds[k]}" for k in ordered]
     return (
-        f"Lean Language Reference — {sum(counts.values())} entries from {REF_ROOT}\n\n"
-        + "  kind                count  description\n"
+        f"Verso site '{s.alias}' — {len(index.entries)} entries from {s.root}\n\n"
+        + f"  {'kind':<{width}}  count  description\n"
         + "\n".join(rows)
     )
 
 
-@mcp.tool(annotations={"title": "Search the Lean Language Reference", **_READONLY_ANNOTATIONS})
+@mcp.tool(annotations={"title": "Search a Verso site", **_READONLY_ANNOTATIONS})
 async def search(
     query: Annotated[
-        str, Field(description="Free-text query, matched against canonical and display names "
-                               "(e.g. 'simp', 'Nat.add', 'induction').", min_length=1)
+        str, Field(description="Free-text query, matched against canonical and display "
+                               "names (e.g. 'simp', 'Nat.add', 'monad').", min_length=1)
     ],
+    site: Annotated[str | None, _SITE_FIELD] = None,
     kind: Annotated[
         str | None, Field(description="Optional kind filter from `list_kinds` "
-                                      "(e.g. 'tactic', 'term', 'section', 'option').")
+                                      "(e.g. 'tactic', 'section', 'option').")
     ] = None,
     limit: Annotated[int, Field(description="Maximum results per page.", ge=1, le=100)] = 20,
     offset: Annotated[int, Field(description="Number of results to skip, for pagination.", ge=0)] = 0,
@@ -697,36 +880,41 @@ async def search(
         ResponseFormat, Field(description="'markdown' (human-readable) or 'json' (structured)")
     ] = ResponseFormat.MARKDOWN,
 ) -> str:
-    """Search the Lean Language Reference for tactics, terms, sections, options, etc.
+    """Search a Verso documentation site's cross-reference index by name.
 
-    Searches the manual's cross-reference index by name; it does NOT search free text
-    inside pages (use `fetch_page` to read a page). Results are ranked by match quality
-    and paginated. Read-only — makes no changes.
+    Matches entry names and display names (not free text inside pages — use
+    `fetch_page` to read a page). Results are ranked by match quality and
+    paginated. Read-only.
 
     Args:
-        query: free-text query matched against canonical names and user-facing display
-            names (e.g. "simp", "Nat.add", "induction").
-        kind: optional kind filter — one of the values from `list_kinds`
-            (e.g. "tactic", "term", "section", "option", "glossary", "syntax").
+        query: free-text query matched against canonical and user-facing names.
+        site: which configured site (alias from `list_sites`); omit for the default.
+        kind: optional kind filter — one of the values from `list_kinds`.
         limit: maximum results per page, 1-100 (default 20).
         offset: number of results to skip, for pagination (default 0).
         response_format: "markdown" (default) or "json".
 
     Returns:
-        markdown: a header line ("N matches … showing X-Y") followed by one bullet per
-            hit ("- [kind] display — url"), and a hint to re-call with a higher offset
-            when more results exist.
-        json: {"query": str, "kind": str|null, "total": int, "count": int,
-               "offset": int, "has_more": bool, "next_offset": int|null,
-               "results": [{"kind","name","display","url","section?","context?"}, ...]}
+        markdown: a header ("N matches … showing X-Y") then one bullet per hit
+            ("- [kind] display — url"), plus a hint to re-call with a higher offset.
+        json: {"site","query","kind","total","count","offset","has_more",
+               "next_offset","results":[{"kind","name","display","url",...}]}
 
     Examples:
-        - "Find the simp tactic"            -> search(query="simp", kind="tactic")
-        - "Page 2 of term matches for List" -> search(query="List", kind="term", offset=20)
-        - Don't use to read a page's prose  -> use `fetch_page` instead.
+        - "Find the simp tactic"             -> search(query="simp", kind="tactic")
+        - "Search the FPiL book for monads"  -> search(query="monad", site="fpil")
+        - "Next page of results"             -> search(query=..., offset=20)
     """
     try:
-        page, total = await search_entries(query, kind=kind, limit=limit, offset=offset)
+        s = _resolve_site(site)
+    except ValueError as exc:
+        return _error(str(exc), response_format)
+    try:
+        index = await ensure_index(s)
+    except (httpx.HTTPError, RuntimeError) as exc:
+        return _error(f"Failed to load index for site '{s.alias}': {exc}", response_format)
+    try:
+        page, total = search_index(index, query, kind, limit, offset)
     except ValueError as exc:
         return _error(str(exc), response_format)
     has_more = offset + len(page) < total
@@ -735,6 +923,7 @@ async def search(
     if response_format is ResponseFormat.JSON:
         return json.dumps(
             {
+                "site": s.alias,
                 "query": query,
                 "kind": kind,
                 "total": total,
@@ -752,10 +941,10 @@ async def search(
         suffix = f" (kind={kind})" if kind else ""
         if total and offset >= total:
             return f"Offset {offset} is past the end ({total} matches for {query!r}{suffix})."
-        return f"No matches for {query!r}{suffix}."
+        return f"No matches for {query!r}{suffix} in site '{s.alias}'."
     header = (
-        f"{total} match(es) for {query!r}"
-        + (f" in kind={kind}" if kind else "")
+        f"{total} match(es) for {query!r} in site '{s.alias}'"
+        + (f", kind={kind}" if kind else "")
         + f"; showing {offset + 1}-{offset + len(page)}."
     )
     lines = [header, *(_format_hit(e) for e in page)]
@@ -764,56 +953,61 @@ async def search(
     return "\n".join(lines)
 
 
-@mcp.tool(annotations={"title": "Fetch a Lean Reference page", **_READONLY_ANNOTATIONS})
+@mcp.tool(annotations={"title": "Fetch a Verso documentation page", **_READONLY_ANNOTATIONS})
 async def fetch_page(
     url_or_path: Annotated[
         str,
         Field(
-            description="Absolute URL inside https://lean-lang.org/doc/reference/, or a "
-                        "site-relative path like '/Tactic-Proofs/Tactic-Reference/'. "
-                        "Append '#anchor' to focus on one section/entry.",
+            description="An absolute URL on a configured Verso site, or a site-relative "
+                        "path like '/Tactic-Proofs/Tactic-Reference/'. Append '#anchor' "
+                        "to focus on one section/entry.",
             min_length=1,
         ),
     ],
+    site: Annotated[str | None, _SITE_FIELD] = None,
     response_format: Annotated[
         ResponseFormat, Field(description="'markdown' (page text) or 'json' (text + metadata)")
     ] = ResponseFormat.MARKDOWN,
 ) -> str:
-    """Fetch a Lean Language Reference page and return its content as Markdown.
+    """Fetch a page from a Verso documentation site and return it as Markdown.
 
-    Converts the manual's HTML to Markdown. When the input includes an `#anchor`, only
-    that single entry/section is returned (not the whole chapter). Plain http://,
-    off-domain URLs, and path-traversal segments (incl. %2e%2e / backslash variants)
-    are rejected. Read-only — makes no changes.
+    Converts the site's HTML to Markdown. With an `#anchor`, only that single
+    entry/section is returned (not the whole chapter). A *relative* path is
+    resolved against `site`; an *absolute* URL is accepted only if it falls under
+    a configured site root. Plain http://, off-site URLs, and path-traversal
+    segments are rejected. Read-only.
 
     Args:
-        url_or_path: an absolute URL inside https://lean-lang.org/doc/reference/, or a
-            site-relative path like "/Tactic-Proofs/Tactic-Reference/". May include an
-            "#anchor" (e.g. ".../Tactic-Reference/#induction") to return one entry.
-        response_format: "markdown" (default) for the page text, or "json" for the
+        url_or_path: absolute URL on a configured site, or a site-relative path.
+            May include an "#anchor" (e.g. ".../Tactic-Reference/#induction").
+        site: site to resolve a *relative* path against (alias from `list_sites`);
+            omit for the default. Ignored when `url_or_path` is absolute.
+        response_format: "markdown" (default) for the page text, or "json" for
             text plus metadata.
 
     Returns:
-        markdown: "<url>" header line, then the page/section content as Markdown
+        markdown: a "<url>" header line, then the page/section as Markdown
             (capped at ~200 KB with a truncation marker).
-        json: {"url": str, "anchor": str|null, "content": str, "truncated": bool}
-        On failure: an error string ("Refusing to fetch: …" / "Failed to fetch …"),
-            or {"error": "..."} when response_format="json".
+        json: {"site","url","anchor","content","truncated"}
+        On failure: an error string, or {"error": "..."} when response_format="json".
 
     Examples:
-        - Read the `induction` tactic -> fetch_page(url_or_path=".../Tactic-Reference/#induction")
-        - Read a whole chapter        -> fetch_page(url_or_path="/Tactic-Proofs/Tactic-Reference/")
-        - Resolve a `search` hit      -> pass the `url` field of a search result here.
+        - Read one entry  -> fetch_page(url_or_path=".../Tactic-Reference/#induction")
+        - Read a chapter  -> fetch_page(url_or_path="/Tactic-Proofs/Tactic-Reference/")
+        - Resolve a hit   -> pass the `url` field of a `search` result here.
     """
     try:
-        url, anchor = _resolve_ref_url(url_or_path)
+        default_site = _resolve_site(site)
+        url, anchor, owning_site = _resolve_page_url(url_or_path, default_site)
     except ValueError as exc:
         return _error(f"Refusing to fetch: {exc}", response_format)
-    cache_path = _page_cache_path(url)
+    cache_path = _page_cache_path(owning_site, url)
     try:
-        body, _source = await _cached_get(url, cache_path, PAGE_TTL_SECONDS)
+        body, source = await _cached_get(url, cache_path, PAGE_TTL_SECONDS)
     except (httpx.HTTPError, RuntimeError) as exc:
         return _error(f"Failed to fetch {url}: {exc}", response_format)
+    if source == "fresh":
+        _enforce_page_cache_budget(owning_site.cache_dir / "pages")
 
     html = body.decode("utf-8", errors="replace")
     body_html = _extract_anchor_element(html, anchor) if anchor else html
@@ -823,7 +1017,13 @@ async def fetch_page(
 
     if response_format is ResponseFormat.JSON:
         return json.dumps(
-            {"url": full_url, "anchor": anchor or None, "content": content, "truncated": truncated},
+            {
+                "site": owning_site.alias,
+                "url": full_url,
+                "anchor": anchor or None,
+                "content": content,
+                "truncated": truncated,
+            },
             indent=2,
             ensure_ascii=False,
         )
@@ -833,40 +1033,41 @@ async def fetch_page(
 # --------------------------------------------------------------------- entrypoint
 
 async def _smoke() -> int:
-    """Offline self-check: load index, run searches, exercise URL-safety + formats."""
-    print("Loading xref index...", file=sys.stderr)
-    entries = await ensure_index()
-    print(f"  loaded {len(entries)} entries", file=sys.stderr)
+    """Offline self-check: registry, index load, searches, URL safety, anchors."""
+    print(f"Configured sites: {', '.join(SITES)} (default: {DEFAULT_ALIAS})", file=sys.stderr)
+    print(await list_sites())
+    print()
+    s = SITES[DEFAULT_ALIAS]
+    index = await ensure_index(s)
+    print(f"default site '{s.alias}' index: {len(index.entries)} entries, "
+          f"{len(index.kinds)} kinds", file=sys.stderr)
     print(await list_kinds())
     print()
-    print("--- list_kinds(json) (first 200 chars) ---")
-    print((await list_kinds(ResponseFormat.JSON))[:200], "…")
-    print()
-    for q, k in [("simp", "tactic"), ("induction", "tactic"), ("Nat.add", "term"), ("inductive", None)]:
+    for q, k in [("simp", "tactic"), ("induction", "tactic"), ("inductive", None)]:
         print(f"--- search({q!r}, kind={k!r}) ---")
-        print(await search(q, kind=k, limit=5))
+        print(await search(q, kind=k, limit=4))
         print()
-    print("--- search('List', kind='term', limit=3, offset=3, json) ---")
-    print(await search("List", kind="term", limit=3, offset=3, response_format=ResponseFormat.JSON))
+    print("--- search('List', kind='term-or-doc', json, paginated) ---")
+    # 'doc' is the slug for the Lean-constant domain on the Lean reference site
+    print((await search("List", kind="doc", limit=2, offset=2, response_format=ResponseFormat.JSON))[:300], "…")
+    print()
+    print("--- unknown site error ---")
+    print(" ", await search("simp", site="does-not-exist"))
     print()
     print("--- URL safety ---")
     for bad in [
         "http://lean-lang.org/doc/reference/x",
         "https://evil.com/doc/reference/x",
-        "https://lean-lang.org/doc/reference/%2e%2e/private",
-        "https://lean-lang.org/doc/reference/..\\private",
-        "https://lean-lang.org/not-reference/",
+        "https://lean-lang.org/doc/reference/latest/%2e%2e/private",
+        "https://lean-lang.org/some-other-site/",
         "",
     ]:
-        out = (await fetch_page(bad)).splitlines()[0]
-        print(f"  reject {bad!r}: {out}")
+        print(f"  reject {bad!r}: {(await fetch_page(bad)).splitlines()[0]}")
     print()
     print("--- anchor precision: fetch_page('.../Tactic-Reference/#induction') ---")
     out = await fetch_page("/Tactic-Proofs/Tactic-Reference/#induction")
-    fun = out.count("fun_induction")
-    print(f"  output {len(out)} chars; mentions 'fun_induction' {fun}x "
-          f"(should be small + 0 — i.e. just the `induction` entry)")
-    print("  first 240 chars:", repr(out[:240]))
+    print(f"  {len(out)} chars; mentions 'fun_induction' {out.count('fun_induction')}x "
+          f"(want small + 0)")
     return 0
 
 
