@@ -1,0 +1,54 @@
+<evaluation>
+  <!--
+    Evaluation suite for the lean-reference MCP server (mcp-builder skill, Phase 4).
+    10 read-only, independent questions. Each requires identifying an entity from a
+    behavioural description (the `search` tool is name-based, so concepts must be
+    found by fetching and reading pages), then extracting a single verifiable fact.
+    Answers are intrinsic to the Lean language or historical metadata, chosen to be
+    stable across manual revisions.
+
+    Run with the mcp-builder evaluation harness (scripts/evaluation.py): transport
+    "stdio", command "uv", args "run [SCRIPT-FLAG] <path to server.py>", where
+    [SCRIPT-FLAG] is the two-dash "script" option to uv run.
+  -->
+  <qa_pair>
+    <question>The Lean tactic reference documents a tactic that proves a decidable goal by evaluating its `Decidable` instance with Lean's native code compiler, and warns that using it adds the entire Lean compiler to the trusted code base. The manual describes this tactic as a synonym for a different tactic invoked with a single option flag. Write that equivalent tactic invocation exactly as the manual does.</question>
+    <answer>decide +native</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Lean's tactic reference describes a call-by-value reduction tactic that, unlike compiled evaluation, can reduce functions defined by well-founded recursion. According to the manual, do the proofs produced by this tactic require trusting the correctness of Lean's code generator? Answer True or False.</question>
+    <answer>False</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In Lean's tactic reference there is a tactic for resolving linear arithmetic problems over the integers and natural numbers; the manual notes that it is "not yet a full decision procedure". What is the fully-qualified internal parser name of this tactic (the dotted identifier the reference lists as its canonical name)?</question>
+    <answer>Lean.Parser.Tactic.omega</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Lean's type-system glossary defines several reduction rules, each named after a Greek letter. One of them describes what happens when a recursor is applied to a constructor. Spell out, in lowercase English letters, the name of that Greek letter.</question>
+    <answer>iota</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>For every inductive type, Lean automatically derives a type class that equips the type with a natural-number measure; this measure is what lets proofs by well-founded recursion show that recursive calls are made on smaller values. What is the name of that type class?</question>
+    <answer>SizeOf</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Lean's manual includes a collection of error explanations. Locate the explanation for the error reported when Lean cannot resolve a name to a local variable or a constant. According to that explanation's metadata, since which version of Lean has this error been emitted? Give the version number.</question>
+    <answer>4.23.0</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>By default, Lake uses the Lean installation that its own binary is colocated with. The Lean reference documents an environment variable that, when set to true, forces Lake to ignore that and instead consult the `LEAN_SYSROOT` variable. What is the name of that environment variable?</question>
+    <answer>LAKE_OVERRIDE_LEAN</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>The Lean reference documents Elan, the Lean toolchain manager. One Elan subcommand exists solely to display the full filesystem path to the toolchain-specific binary for a given command name. What is the name of that subcommand (the word that follows `elan`)?</question>
+    <answer>which</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Lean's tactic reference describes a tactic that closes fixed-width bitvector goals by invoking an external SAT solver. A companion tactic avoids calling the SAT solver by reusing a proof saved to disk from an earlier run. What file extension (without the leading dot, in lowercase) does that saved proof file use?</question>
+    <answer>lrat</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Beyond its core type theory, Lean's standard library relies on exactly three axioms. Two of them are propositional extensionality and a form of the axiom of choice. The third is the soundness principle for quotient types. Give the fully-qualified name of that third axiom.</question>
+    <answer>Quot.sound</answer>
+  </qa_pair>
+</evaluation>
