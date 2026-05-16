@@ -1,0 +1,90 @@
+name: Release
+
+# Cut a release by pushing a version tag (commitizen does this via `cz bump`):
+#   cz bump && git push --follow-tags
+#
+# Prerequisites (one-time):
+#   * PyPI Trusted Publishing: register this repo + workflow `release.yml` as a
+#     trusted publisher for the `verso-mcp` project at https://pypi.org/manage/.
+#   * MCP registry: fill the namespace placeholder in `server.json` (and the
+#     `mcp-name` marker in README.md). With an `io.github.<owner>/...` name, the
+#     `registry` job authenticates via GitHub OIDC — no secret needed.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # PyPI Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  registry:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # MCP registry GitHub OIDC auth
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check server.json is configured
+        id: guard
+        run: |
+          if grep -q YOUR_GITHUB_USERNAME server.json; then
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::server.json still has the namespace placeholder; skipping MCP registry publish."
+          else
+            echo "ready=yes" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install mcp-publisher
+        if: steps.guard.outputs.ready == 'yes'
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Sync server.json version to the tag
+        if: steps.guard.outputs.ready == 'yes'
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          jq --arg v "$v" '.version = $v | .packages[0].version = $v' server.json > server.tmp
+          mv server.tmp server.json
+      - name: Publish to the MCP registry
+        if: steps.guard.outputs.ready == 'yes'
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
+  github-release:
+    needs: [pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # create the GitHub Release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
