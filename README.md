@@ -102,6 +102,9 @@ The server is built to be a well-behaved client of documentation sites:
   *and* the final post-redirect URL, so a same-host URL outside a configured
   root is still refused. Path traversal (`..`, `%2e%2e`, backslash variants) is
   rejected.
+- **Obeys `robots.txt`** — each host's `robots.txt` is fetched and respected
+  for this server's `User-Agent`; a host can target it specifically with a
+  `User-agent: verso-mcp` group.
 - **Rate limiting** — a shared token bucket caps outbound requests across all
   sites (default 2 req/s, burst 5); a hit falls back to cached content rather
   than hammering the origin.
@@ -130,6 +133,16 @@ stable, verifiable answer.
 - The `xref.json` schema is an undocumented Verso internal; it may shift between
   Verso releases. A useful upstream contribution would be a documented,
   versioned schema for it.
+
+## Disclaimer
+
+This project — every line of its code, configuration, and documentation — was
+written **entirely by [Claude](https://www.anthropic.com/claude), an AI
+assistant**. No human wrote this code.
+
+It was built for the author's own personal use and is shared here only in case
+it is useful to others. It comes with **no warranty whatsoever** — see the
+[License](#license). Use it at your own risk.
 
 ## License
 
