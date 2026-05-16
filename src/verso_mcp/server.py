@@ -25,6 +25,7 @@ Hardening (assumes a possibly-hostile or confused agent driving these tools):
     request URL AND the post-redirect response URL; the configured site list IS
     the allowlist;
   * the URL check rejects path traversal in any encoding (`..`, `%2e%2e`, `..\\`);
+  * each host's robots.txt is fetched and obeyed for this server's User-Agent;
   * responses are streamed with an 8 MB cap (defuses decompression bombs);
   * outbound requests are gated by a shared token-bucket rate limiter;
   * each site's cache is bounded by 200 MB LRU eviction; ETag/304 revalidation;
@@ -52,6 +53,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import unquote, urlparse
+from urllib.robotparser import RobotFileParser
 
 import html2text
 import httpx
@@ -69,6 +71,7 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024  # cap any single HTTP body
 MAX_MARKDOWN_BYTES = 200 * 1024  # cap Markdown returned to the agent
 MAX_ANCHOR_HTML_BYTES = 80 * 1024  # cap anchor-extraction fallback
 MAX_PAGE_CACHE_BYTES = 200 * 1024 * 1024  # LRU-evict a site's page cache above this
+MAX_ROBOTS_BYTES = 512 * 1024  # cap parsed robots.txt size
 USER_AGENT = f"verso-mcp/{__version__}"
 ALLOWED_CONTENT_TYPES = frozenset({"text/html", "application/json"})
 
@@ -316,6 +319,54 @@ async def _acquire_request_token() -> None:
         await asyncio.sleep(min(wait_for, 0.25))
 
 
+# --------------------------------------------------------------------- robots.txt
+
+_robots: dict[str, RobotFileParser] = {}
+_robots_locks: dict[str, asyncio.Lock] = {}
+
+
+def _robots_lock_for(host: str) -> asyncio.Lock:
+    lock = _robots_locks.get(host)
+    if lock is None:
+        lock = _robots_locks[host] = asyncio.Lock()
+    return lock
+
+
+async def _robots_for_host(host: str) -> RobotFileParser:
+    """Fetch and parse a host's robots.txt once per process; cache the result.
+
+    A missing robots.txt (404) or an unreachable one resolves to "allow"; an
+    explicit 401/403 resolves to "disallow all" (the host is gating access).
+    """
+    rp = _robots.get(host)
+    if rp is not None:
+        return rp
+    async with _robots_lock_for(host):
+        rp = _robots.get(host)
+        if rp is not None:
+            return rp
+        rp = RobotFileParser()
+        try:
+            await _acquire_request_token()
+            resp = await _http().get(f"https://{host}/robots.txt")
+            if resp.status_code == 200:
+                rp.parse(resp.text[:MAX_ROBOTS_BYTES].splitlines())
+            elif resp.status_code in (401, 403):
+                rp.disallow_all = True
+            else:
+                rp.allow_all = True
+        except (httpx.HTTPError, _RateLimited):
+            rp.allow_all = True  # robots unreachable — don't block doc access
+        _robots[host] = rp
+        return rp
+
+
+async def _robots_allowed(url: str) -> bool:
+    """Whether this server's User-Agent may fetch `url`, per the host's robots.txt."""
+    rp = await _robots_for_host(urlparse(url).netloc.lower())
+    return rp.can_fetch(USER_AGENT, url)
+
+
 # --------------------------------------------------------------------- cached fetch
 
 
@@ -323,8 +374,9 @@ async def _cached_get(url: str, cache_path: Path, ttl_seconds: int) -> tuple[byt
     """Fetch `url` with disk cache + ETag revalidation, streamed with a byte cap.
 
     Returns (body_bytes, source); source is "cache" / "revalidated" / "fresh" / "stale".
-    Raises RuntimeError on out-of-scope redirects, unexpected content-type, body
-    over MAX_RESPONSE_BYTES, or unrecoverable network failure.
+    Raises RuntimeError on a robots.txt disallowal, out-of-scope redirects, an
+    unexpected content-type, a body over MAX_RESPONSE_BYTES, or unrecoverable
+    network failure.
     """
     meta_path = cache_path.with_suffix(cache_path.suffix + ".meta")
 
@@ -346,6 +398,12 @@ async def _cached_get(url: str, cache_path: Path, ttl_seconds: int) -> tuple[byt
 
     if cached_body is not None and cache_age < ttl_seconds:
         return cached_body, "cache"
+
+    if not await _robots_allowed(url):
+        raise RuntimeError(
+            f"{urlparse(url).netloc}'s robots.txt disallows fetching this URL "
+            f"for user-agent {USER_AGENT!r}"
+        )
 
     headers: dict[str, str] = {}
     if etag:
