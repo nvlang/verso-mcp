@@ -48,7 +48,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import unquote, urlparse
@@ -62,15 +62,13 @@ from pydantic import Field
 
 __version__ = "0.3.1"
 
-CACHE_DIR = Path(
-    os.environ.get("VERSO_MCP_CACHE", str(Path.home() / ".cache" / "verso-mcp"))
-)
+CACHE_DIR = Path(os.environ.get("VERSO_MCP_CACHE", str(Path.home() / ".cache" / "verso-mcp")))
 XREF_TTL_SECONDS = 24 * 3600
 PAGE_TTL_SECONDS = 24 * 3600
-MAX_RESPONSE_BYTES = 8 * 1024 * 1024        # cap any single HTTP body
-MAX_MARKDOWN_BYTES = 200 * 1024             # cap Markdown returned to the agent
-MAX_ANCHOR_HTML_BYTES = 80 * 1024           # cap anchor-extraction fallback
-MAX_PAGE_CACHE_BYTES = 200 * 1024 * 1024    # LRU-evict a site's page cache above this
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024  # cap any single HTTP body
+MAX_MARKDOWN_BYTES = 200 * 1024  # cap Markdown returned to the agent
+MAX_ANCHOR_HTML_BYTES = 80 * 1024  # cap anchor-extraction fallback
+MAX_PAGE_CACHE_BYTES = 200 * 1024 * 1024  # LRU-evict a site's page cache above this
 USER_AGENT = f"verso-mcp/{__version__}"
 ALLOWED_CONTENT_TYPES = frozenset({"text/html", "application/json"})
 
@@ -96,7 +94,8 @@ def _read_float_env(name: str, default: float, *, allow_zero: bool = False) -> f
     floor = 0.0 if allow_zero else 1e-9
     if val < floor:
         print(
-            f"warning: {name}={raw!r} must be {'>= 0' if allow_zero else '> 0'}; using default {default}",
+            f"warning: {name}={raw!r} must be {'>= 0' if allow_zero else '> 0'}; "
+            f"using default {default}",
             file=sys.stderr,
         )
         return default
@@ -110,7 +109,7 @@ RATE_REFILL_PER_SEC = _read_float_env("VERSO_MCP_RATE_PER_SEC", 2.0)
 RATE_MAX_WAIT_SEC = _read_float_env("VERSO_MCP_RATE_MAX_WAIT", 3.0, allow_zero=True)
 
 
-class ResponseFormat(str, Enum):
+class ResponseFormat(StrEnum):
     """Output format for tool responses."""
 
     MARKDOWN = "markdown"
@@ -119,12 +118,13 @@ class ResponseFormat(str, Enum):
 
 # --------------------------------------------------------------------- site registry
 
+
 @dataclass(frozen=True)
 class Site:
     """A configured Verso documentation site."""
 
-    alias: str   # short selector, e.g. "lean-reference"
-    root: str    # normalized site root URL, always ends with "/"
+    alias: str  # short selector, e.g. "lean-reference"
+    root: str  # normalized site root URL, always ends with "/"
 
     @property
     def xref_url(self) -> str:
@@ -191,19 +191,23 @@ _sites_spec = os.environ.get("VERSO_MCP_SITES", "").strip()
 SITES: dict[str, Site] = _parse_sites(_sites_spec) if _sites_spec else {}
 if not SITES:
     if _sites_spec:
-        print("warning: VERSO_MCP_SITES had no usable entries; using the default site", file=sys.stderr)
+        print(
+            "warning: VERSO_MCP_SITES had no usable entries; using the default site",
+            file=sys.stderr,
+        )
     SITES = _parse_sites(DEFAULT_SITE_SPEC)
 DEFAULT_ALIAS = next(iter(SITES))
 
 
 # --------------------------------------------------------------------- entry model
 
+
 @dataclass(frozen=True)
 class Entry:
-    kind: str            # friendly kind slug (e.g. "tactic")
-    name: str            # canonical key from xref `contents`
-    display: str         # userName / term / title — what a human types/reads
-    url: str             # absolute URL with anchor
+    kind: str  # friendly kind slug (e.g. "tactic")
+    name: str  # canonical key from xref `contents`
+    display: str  # userName / term / title — what a human types/reads
+    url: str  # absolute URL with anchor
     section: str | None  # section number (sections only)
     context: str | None  # parent breadcrumb (e.g. "Tactic Proofs > Tactic Reference")
 
@@ -226,6 +230,7 @@ def _entry_to_dict(e: Entry) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------- HTTP client
+
 
 @functools.cache
 def _http() -> httpx.AsyncClient:
@@ -261,6 +266,7 @@ def _site_for_url(url: str) -> Site | None:
 
 
 # --------------------------------------------------------------------- rate limit
+
 
 class _RateLimited(RuntimeError):
     """Raised when the outbound token bucket can't be replenished within the deadline."""
@@ -298,7 +304,10 @@ async def _acquire_request_token() -> None:
             log.warning(
                 "rate-limit hit (sustained %.2g req/s, burst %g); rejecting after %.1fs wait "
                 "(total rejections this process: %d)",
-                RATE_REFILL_PER_SEC, RATE_BURST, RATE_MAX_WAIT_SEC, _rate_rejected_count,
+                RATE_REFILL_PER_SEC,
+                RATE_BURST,
+                RATE_MAX_WAIT_SEC,
+                _rate_rejected_count,
             )
             raise _RateLimited(
                 f"outbound rate limit: >{RATE_REFILL_PER_SEC:g} req/s sustained "
@@ -308,6 +317,7 @@ async def _acquire_request_token() -> None:
 
 
 # --------------------------------------------------------------------- cached fetch
+
 
 async def _cached_get(url: str, cache_path: Path, ttl_seconds: int) -> tuple[bytes, str]:
     """Fetch `url` with disk cache + ETag revalidation, streamed with a byte cap.
@@ -435,6 +445,7 @@ def _enforce_page_cache_budget(pages_dir: Path) -> None:
 
 # --------------------------------------------------------------------- index building
 
+
 async def _load_xref(site: Site) -> Any:
     """Load and parse a site's xref.json, recovering from a corrupt cache.
 
@@ -501,7 +512,8 @@ def _build_index(site: Site, xref: Any) -> SiteIndex:
         used_slugs.add(slug)
         title = block.get("title")
         labels[slug] = (
-            title if isinstance(title, str) and title and title != domain_key
+            title
+            if isinstance(title, str) and title and title != domain_key
             else slug.replace("-", " ")
         )
         for name, raw in (block.get("contents") or {}).items():
@@ -522,7 +534,9 @@ def _build_index(site: Site, xref: Any) -> SiteIndex:
                     or data.get("display")
                     or name
                 )
-                section = data.get("sectionNum") if isinstance(data.get("sectionNum"), str) else None
+                section = (
+                    data.get("sectionNum") if isinstance(data.get("sectionNum"), str) else None
+                )
                 ctx_list = data.get("context")
                 context = None
                 if isinstance(ctx_list, list):
@@ -540,14 +554,16 @@ def _build_index(site: Site, xref: Any) -> SiteIndex:
                     page = addr_s
                 else:
                     page = root + "/" + addr_s.lstrip("/")
-                entries.append(Entry(
-                    kind=slug,
-                    name=str(name),
-                    display=str(display),
-                    url=f"{page}#{anchor}",
-                    section=section,
-                    context=context,
-                ))
+                entries.append(
+                    Entry(
+                        kind=slug,
+                        name=str(name),
+                        display=str(display),
+                        url=f"{page}#{anchor}",
+                        section=section,
+                        context=context,
+                    )
+                )
 
     present = {e.kind for e in entries}
     kinds = {slug: labels[slug] for slug in labels if slug in present}
@@ -590,12 +606,18 @@ def _score(entry: Entry, q_lower: str) -> int:
     name_l = entry.name.lower()
     disp_l = entry.display.lower()
     s = 0
-    if name_l == q_lower:           s += 1000
-    if disp_l == q_lower:           s += 900
-    if name_l.startswith(q_lower):  s += 200
-    if disp_l.startswith(q_lower):  s += 150
-    if q_lower in name_l:           s += 50
-    if q_lower in disp_l:           s += 40
+    if name_l == q_lower:
+        s += 1000
+    if disp_l == q_lower:
+        s += 900
+    if name_l.startswith(q_lower):
+        s += 200
+    if disp_l.startswith(q_lower):
+        s += 150
+    if q_lower in name_l:
+        s += 50
+    if q_lower in disp_l:
+        s += 40
     tokens = set(filter(None, _WORD_SPLIT.split(f"{name_l} {disp_l}")))
     if q_lower in tokens:
         s += 100
@@ -626,7 +648,7 @@ def search_index(
     )
     ranked = [es for es in ranked if es[1] > 0]
     total = len(ranked)
-    page = [e for e, _ in ranked[offset:offset + limit]]
+    page = [e for e, _ in ranked[offset : offset + limit]]
     return page, total
 
 
@@ -646,6 +668,7 @@ def _format_hit(e: Entry) -> str:
 
 # --------------------------------------------------------------------- URL safety
 
+
 def _path_has_traversal(path: str) -> bool:
     """True iff `path` decodes to anything containing `.` or `..` segments."""
     decoded = unquote(path).replace("\\", "/")
@@ -659,9 +682,7 @@ def _resolve_site(alias: str | None) -> Site:
     key = alias.strip().lower()
     if key in SITES:
         return SITES[key]
-    raise ValueError(
-        f"unknown site {alias!r}; configured sites: {', '.join(sorted(SITES))}"
-    )
+    raise ValueError(f"unknown site {alias!r}; configured sites: {', '.join(sorted(SITES))}")
 
 
 def _resolve_page_url(url_or_path: str, default_site: Site) -> tuple[str, str, Site]:
@@ -695,6 +716,7 @@ def _page_cache_path(site: Site, url: str) -> Path:
 
 
 # --------------------------------------------------------------------- HTML helpers
+
 
 def _make_h2t() -> html2text.HTML2Text:
     h = html2text.HTML2Text()
@@ -731,19 +753,22 @@ def _extract_anchor_element(html: str, anchor: str) -> str:
             if depth == 0:
                 close = html.find(">", t.end())
                 if close != -1:
-                    return html[m.start():close + 1]
+                    return html[m.start() : close + 1]
                 break
-        else:           # opening tag
+        else:  # opening tag
             depth += 1
         pos = t.end()
-    return html[m.start():m.start() + MAX_ANCHOR_HTML_BYTES]
+    return html[m.start() : m.start() + MAX_ANCHOR_HTML_BYTES]
 
 
 def _cap_output(text: str, limit: int, what: str) -> tuple[str, bool]:
     """Return (possibly-truncated text, was_truncated)."""
     if len(text) <= limit:
         return text, False
-    marker = f"\n\n[truncated: capped at {limit} bytes of {what}; supply a tighter `#anchor` for less content]"
+    marker = (
+        f"\n\n[truncated: capped at {limit} bytes of {what}; "
+        "supply a tighter `#anchor` for less content]"
+    )
     return text[:limit] + marker, True
 
 
@@ -755,6 +780,7 @@ def _error(message: str, fmt: ResponseFormat) -> str:
 
 
 # --------------------------------------------------------------------- MCP server
+
 
 @asynccontextmanager
 async def _lifespan(_server: FastMCP):
@@ -777,7 +803,7 @@ _READONLY_ANNOTATIONS = {
 
 _SITE_FIELD = Field(
     description="Which configured Verso site to use — an alias from `list_sites`. "
-                "Omit to use the default site.",
+    "Omit to use the default site.",
 )
 
 
@@ -802,12 +828,14 @@ async def list_sites(
     """
     rows = []
     for alias, site in SITES.items():
-        rows.append({
-            "alias": alias,
-            "root": site.root,
-            "indexed": alias in _indexes,
-            "default": alias == DEFAULT_ALIAS,
-        })
+        rows.append(
+            {
+                "alias": alias,
+                "root": site.root,
+                "indexed": alias in _indexes,
+                "default": alias == DEFAULT_ALIAS,
+            }
+        )
     if response_format is ResponseFormat.JSON:
         return json.dumps({"default": DEFAULT_ALIAS, "sites": rows}, indent=2, ensure_ascii=False)
     width = max((len(r["alias"]) for r in rows), default=0)
@@ -881,16 +909,25 @@ async def list_kinds(
 @mcp.tool(annotations={"title": "Search a Verso site", **_READONLY_ANNOTATIONS})
 async def search(
     query: Annotated[
-        str, Field(description="Free-text query, matched against canonical and display "
-                               "names (e.g. 'simp', 'Nat.add', 'monad').", min_length=1)
+        str,
+        Field(
+            description="Free-text query, matched against canonical and display "
+            "names (e.g. 'simp', 'Nat.add', 'monad').",
+            min_length=1,
+        ),
     ],
     site: Annotated[str | None, _SITE_FIELD] = None,
     kind: Annotated[
-        str | None, Field(description="Optional kind filter from `list_kinds` "
-                                      "(e.g. 'tactic', 'section', 'option').")
+        str | None,
+        Field(
+            description="Optional kind filter from `list_kinds` "
+            "(e.g. 'tactic', 'section', 'option')."
+        ),
     ] = None,
     limit: Annotated[int, Field(description="Maximum results per page.", ge=1, le=100)] = 20,
-    offset: Annotated[int, Field(description="Number of results to skip, for pagination.", ge=0)] = 0,
+    offset: Annotated[
+        int, Field(description="Number of results to skip, for pagination.", ge=0)
+    ] = 0,
     response_format: Annotated[
         ResponseFormat, Field(description="'markdown' (human-readable) or 'json' (structured)")
     ] = ResponseFormat.MARKDOWN,
@@ -974,8 +1011,8 @@ async def fetch_page(
         str,
         Field(
             description="An absolute URL on a configured Verso site, or a site-relative "
-                        "path like '/Tactic-Proofs/Tactic-Reference/'. Append '#anchor' "
-                        "to focus on one section/entry.",
+            "path like '/Tactic-Proofs/Tactic-Reference/'. Append '#anchor' "
+            "to focus on one section/entry.",
             min_length=1,
         ),
     ],
@@ -1047,6 +1084,7 @@ async def fetch_page(
 
 # --------------------------------------------------------------------- entrypoint
 
+
 async def _smoke() -> int:
     """Offline self-check: registry, index load, searches, URL safety, anchors."""
     print(f"Configured sites: {', '.join(SITES)} (default: {DEFAULT_ALIAS})", file=sys.stderr)
@@ -1054,8 +1092,10 @@ async def _smoke() -> int:
     print()
     s = SITES[DEFAULT_ALIAS]
     index = await ensure_index(s)
-    print(f"default site '{s.alias}' index: {len(index.entries)} entries, "
-          f"{len(index.kinds)} kinds", file=sys.stderr)
+    print(
+        f"default site '{s.alias}' index: {len(index.entries)} entries, {len(index.kinds)} kinds",
+        file=sys.stderr,
+    )
     print(await list_kinds())
     print()
     for q, k in [("simp", "tactic"), ("induction", "tactic"), ("inductive", None)]:
@@ -1064,7 +1104,12 @@ async def _smoke() -> int:
         print()
     print("--- search('List', kind='doc', json, paginated) ---")
     # 'doc' is the slug for the Lean-constant domain on the Lean reference site
-    print((await search("List", kind="doc", limit=2, offset=2, response_format=ResponseFormat.JSON))[:300], "…")
+    print(
+        (await search("List", kind="doc", limit=2, offset=2, response_format=ResponseFormat.JSON))[
+            :300
+        ],
+        "…",
+    )
     print()
     print("--- unknown site error ---")
     print(" ", await search("simp", site="does-not-exist"))
@@ -1081,8 +1126,10 @@ async def _smoke() -> int:
     print()
     print("--- anchor precision: fetch_page('.../Tactic-Reference/#induction') ---")
     out = await fetch_page("/Tactic-Proofs/Tactic-Reference/#induction")
-    print(f"  {len(out)} chars; mentions 'fun_induction' {out.count('fun_induction')}x "
-          f"(want small + 0)")
+    print(
+        f"  {len(out)} chars; mentions 'fun_induction' {out.count('fun_induction')}x "
+        f"(want small + 0)"
+    )
     return 0
 
 

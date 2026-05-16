@@ -41,3 +41,22 @@ path = "src/verso_mcp/server.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/verso_mcp"]
+
+[dependency-groups]
+dev = ["ruff", "commitizen", "pre-commit"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.3.1"
+version_files = ["src/verso_mcp/server.py:__version__"]
+tag_format = "v$version"
+update_changelog_on_bump = true
+major_version_zero = true
+changelog_file = "CHANGELOG.md"

@@ -1,0 +1,16 @@
+# Local git hooks for verso-mcp. Enable once with: pre-commit install
+# Keep hook revisions current with: pre-commit autoupdate
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.16.2
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
