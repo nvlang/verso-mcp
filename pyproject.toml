@@ -43,7 +43,7 @@ path = "src/verso_mcp/server.py"
 packages = ["src/verso_mcp"]
 
 [dependency-groups]
-dev = ["ruff", "commitizen", "pre-commit"]
+dev = ["ruff", "commitizen", "pre-commit", "pytest>=8", "pytest-asyncio>=0.24"]
 
 [tool.ruff]
 line-length = 100
@@ -51,6 +51,11 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `asyncio_mode = "auto"` lets `async def test_*` run without a per-test marker.
+asyncio_mode = "auto"
 
 [tool.commitizen]
 name = "cz_conventional_commits"
