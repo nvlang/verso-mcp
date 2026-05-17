@@ -47,13 +47,18 @@ lets an AI agent search and read documentation built with
 [Verso](https://github.com/leanprover/verso), Lean's documentation authoring
 tool.
 
-Verso powers the Lean ecosystem's reference docs and books — the
+Verso powers most of the Lean ecosystem's reference docs and books — the
 [Lean Language Reference](https://lean-lang.org/doc/reference/latest/),
 [Functional Programming in Lean](https://lean-lang.org/functional_programming_in_lean/),
 [Theorem Proving in Lean 4](https://lean-lang.org/theorem_proving_in_lean4/),
 and more. Verso *Manual*-genre sites publish a machine-readable cross-reference
-index (`xref.json`); this server consumes that index and the rendered HTML —
-**no modifications to Verso or to the documentation site are required.**
+index (`xref.json`); this server consumes that index and the rendered HTML.
+
+> [!CAUTION]
+> The format of the `xref.json` files that this server depends on is
+> Verso-internal and may change at any time. Such changes could render this
+> server non-functional. I'll try to keep up with any such changes, but can't
+> make any promises.
 
 Point it at one or more Verso sites and an agent gets four read-only tools:
 `list_sites`, `list_kinds`, `search`, and `fetch_page`.
@@ -101,15 +106,15 @@ automatically on first launch — no manual virtualenv or `pip install` step.
 ## Use with Claude Code / Claude Desktop
 
 Add an entry to your MCP configuration (`.mcp.json`, `~/.claude.json`, or
-`claude_desktop_config.json`). Running from a local clone of this repository:
+`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "verso": {
       "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/verso-mcp", "verso-mcp"],
+      "command": "uvx",
+      "args": ["verso-mcp"],
       "env": {
         "VERSO_MCP_SITES": "lean-reference=https://lean-lang.org/doc/reference/latest/, fpil=https://lean-lang.org/functional_programming_in_lean/"
       }
@@ -117,11 +122,6 @@ Add an entry to your MCP configuration (`.mcp.json`, `~/.claude.json`, or
   }
 }
 ```
-
-Use an **absolute path** so the server resolves regardless of the client's
-working directory. Once `verso-mcp` is published to PyPI, the entry simplifies to
-`"command": "uvx"` with `"args": ["verso-mcp"]`. The `env` block is optional —
-omit it to serve just the Lean Language Reference.
 
 ## Environment variables
 
@@ -136,6 +136,17 @@ All optional:
 | `VERSO_MCP_RATE_MAX_WAIT`   | `3`                            | Max seconds to wait for a token before refusing.                |
 
 ## Safety & etiquette
+
+> [!WARNING]
+> [MCP servers have a lot of
+> risks](https://www.redhat.com/en/blog/model-context-protocol-mcp-understanding-security-risks-and-controls).
+> As far as MCP servers go, this one (`verso-mcp`) should be relatively
+> innocuous: it is read-only, runs no shell commands, and only reaches the
+> documentation sites you configure (or just the Lean Language Reference, if
+> left unconfigured). The main caveat is that a malicious or compromised
+> documentation site could try to steer the model via indirect prompt injection.
+> `verso-mcp` cannot prevent that, so don't let an agent that uses it take
+> consequential actions without your review.
 
 The server is built to be a well-behaved client of documentation sites:
 
@@ -164,7 +175,7 @@ Anthropic's `mcp-builder` skill. The questions target the default site (the
 Lean Language Reference); each is read-only, independent, and has a single
 stable, verifiable answer.
 
-## Limitations & ideas
+## Limitations
 
 - Works with Verso **Manual**-genre sites (those that publish `xref.json`).
   Blog-genre sites have no `xref.json`. Tutorial-genre sites also emit one and
@@ -173,21 +184,14 @@ stable, verifiable answer.
   cross-reference index, the same granularity as Verso's own on-site search. It
   does not do full-text search of page bodies.
 - The `xref.json` schema is an undocumented Verso internal; it may shift between
-  Verso releases. A useful upstream contribution would be a documented,
-  versioned schema for it.
+  Verso releases, which could break this MCP server if it doesn't keep up.
 
 ## Disclaimer
 
-This project — every line of its code, configuration, and documentation — was
-written **entirely by [Claude](https://www.anthropic.com/claude), an AI
-assistant**. No human wrote this code.
-
-It was built for the author's own personal use and is shared here only in case
-it is useful to others. It comes with **no warranty whatsoever** — see the
-[License](#license). Use it at your own risk.
-
-## License
-
-[Apache License 2.0](LICENSE) © 2026 N. V. Lang
+This project was written almost entirely by
+[Claude Opus 4.7 (1M)](https://www.anthropic.com/news/claude-opus-4-7), an AI
+assistant. It was built for my own personal use and is shared here only in case
+it is useful to others. It comes with **no warranty whatsoever**. Use it at your
+own risk.
 
 <!-- mcp-name: io.github.nvlang/verso -->
