@@ -30,11 +30,11 @@ that makes the server bigger needs a strong, specific justification.
 | ---- | ------- |
 | `src/verso_mcp/server.py` | The entire server. One file on purpose. |
 | `src/verso_mcp/__init__.py`, `__main__.py` | Thin entry-point shims. |
-| `tests/` | Offline pytest suite (`test_core.py`, `test_fetch.py`, `conftest.py`). |
+| `tests/` | pytest suite — offline (`test_core.py`, `test_fetch.py`) plus the `live` canary (`test_xref_contract.py`). |
 | `pyproject.toml` | Packaging, dependencies, tool config (ruff, pytest, commitizen). |
 | `server.json` | MCP registry manifest. |
 | `evaluation.xml` | 10-question eval suite (mcp-builder format). |
-| `.github/workflows/` | CI, release, Scorecard, Dependabot auto-merge. |
+| `.github/workflows/` | CI, release, Scorecard, Dependabot auto-merge, xref-drift canary. |
 
 The version number lives in **one** place — `__version__` in `server.py` — and
 is surfaced everywhere else dynamically (hatchling) or by `cz bump`. Never edit a
@@ -78,6 +78,26 @@ owner rather than deciding alone.
 
 When you add a feature that makes a network request or handles a URL, add a test
 in the same style and, if it introduces a new invariant, add a row here.
+
+## Upstream format drift
+
+`verso-mcp` parses `xref.json`, an **undocumented Verso internal** that can
+change between Verso releases. Two guards exist — keep both working:
+
+- `_build_index` raises a `RuntimeError` if the xref parsed but produced no
+  entries, so a format change fails loudly instead of silently serving an empty
+  index. Pinned by `test_core.py::test_build_index_raises_on_schema_drift`.
+- `.github/workflows/canary.yml` runs the `live`-marked
+  `tests/test_xref_contract.py` weekly against the real Lean Language Reference.
+  The offline suite only exercises a synthetic fixture, so this canary is the
+  actual drift alarm.
+
+When the canary goes red, the format has likely drifted: compare the live
+`xref.json` against what `_build_index` expects, update the parser, and update
+the synthetic `XREF` fixtures in `tests/test_core.py` and `tests/test_fetch.py`
+to match. Upstream, the format is produced by `xrefJson` in
+`src/multi-verso/MultiVerso.lean` and written by the Manual genre in
+`src/verso-manual/VersoManual.lean` (both in `leanprover/verso`).
 
 ## Making a change
 
