@@ -1,4 +1,41 @@
-# verso-mcp
+<br>
+<div align="center">
+<h1>verso-mcp</h1>
+<br>
+<div>
+
+[
+<picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/pypi/v/verso-mcp?style=flat-square&logo=pypi&logoColor=a3acb7&label=&labelColor=21262d&color=21262d">
+    <source media="(prefers-color-scheme: light)" srcset="https://img.shields.io/pypi/v/verso-mcp?style=flat-square&logo=pypi&logoColor=24292f&label=&labelColor=eaeef2&color=eaeef2">
+    <img alt="PyPI version" src="https://img.shields.io/pypi/v/verso-mcp?style=flat-square&logo=pypi&logoColor=24292f&label=&labelColor=eaeef2&color=eaeef2">
+</picture>
+](https://pypi.org/project/verso-mcp/)
+[
+<picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/pypi/pyversions/verso-mcp?style=flat-square&logo=python&logoColor=a3acb7&label=&labelColor=21262d&color=21262d">
+    <source media="(prefers-color-scheme: light)" srcset="https://img.shields.io/pypi/pyversions/verso-mcp?style=flat-square&logo=python&logoColor=24292f&label=&labelColor=eaeef2&color=eaeef2">
+    <img alt="Supported Python versions" src="https://img.shields.io/pypi/pyversions/verso-mcp?style=flat-square&logo=python&logoColor=24292f&label=&labelColor=eaeef2&color=eaeef2">
+</picture>
+](https://pypi.org/project/verso-mcp/)
+[
+<picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/ossf-scorecard/github.com/nvlang/verso-mcp?style=flat-square&labelColor=21262d&color=21262d">
+    <source media="(prefers-color-scheme: light)" srcset="https://img.shields.io/ossf-scorecard/github.com/nvlang/verso-mcp?style=flat-square&labelColor=eaeef2&color=eaeef2">
+    <img alt="OpenSSF Scorecard" src="https://img.shields.io/ossf-scorecard/github.com/nvlang/verso-mcp?style=flat-square&labelColor=eaeef2&color=eaeef2">
+</picture>
+](https://scorecard.dev/viewer/?uri=github.com/nvlang/verso-mcp)
+[
+<picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/github/license/nvlang/verso-mcp?style=flat-square&logo=apache&logoColor=a3acb7&label=&labelColor=21262d&color=21262d">
+    <source media="(prefers-color-scheme: light)" srcset="https://img.shields.io/github/license/nvlang/verso-mcp?style=flat-square&logo=apache&logoColor=24292f&label=&labelColor=eaeef2&color=eaeef2">
+    <img alt="License" src="https://img.shields.io/github/license/nvlang/verso-mcp?style=flat-square&logo=apache&logoColor=24292f&label=&labelColor=eaeef2&color=eaeef2">
+</picture>
+](https://github.com/nvlang/verso-mcp/blob/main/LICENSE)
+
+</div>
+</div>
+<br>
 
 An [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server that
 lets an AI agent search and read documentation built with
@@ -148,4 +185,4 @@ it is useful to others. It comes with **no warranty whatsoever** — see the
 
 [Apache License 2.0](LICENSE) © 2026 N. V. Lang
 
-<!-- mcp-name: io.github.YOUR_GITHUB_USERNAME/verso -->
+<!-- mcp-name: io.github.nvlang/verso -->

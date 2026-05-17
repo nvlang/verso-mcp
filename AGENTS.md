@@ -157,11 +157,21 @@ security issue worth a release would be a bug in *this* code — and that is a
 
 ## Before the first publish
 
-`server.json` and `README.md` contain a `YOUR_GITHUB_USERNAME` placeholder, and
-`pyproject.toml` has a commented-out `[project.urls]` block. These must be
-filled in with the real GitHub account/URL **before** the repo is first
-published to PyPI or the MCP registry. `release.yml` has a guard that fails
-loudly if the placeholder is still present, so this cannot be forgotten.
+The in-repo identifiers are set — `server.json`, `README.md`, and
+`pyproject.toml` all point at `nvlang/verso-mcp`. What remains is one-time
+account and repository setup that cannot live in the repo:
+
+- **PyPI Trusted Publishing** — register this repository and the `release.yml`
+  workflow as a trusted publisher for the `verso-mcp` PyPI project (no
+  environment name). Until this is done the `pypi` release job cannot upload.
+- **Repository settings** — enable "Allow auto-merge", add a branch-protection
+  rule on `main` that requires the `quality` and `commits` CI checks, and allow
+  GitHub Actions to approve pull requests. Without these the Dependabot
+  auto-merge workflow cannot work (or would merge without waiting for CI).
+
+`release.yml` still guards `server.json`: if the `YOUR_GITHUB_USERNAME`
+placeholder is ever reintroduced, the MCP-registry publish is skipped rather
+than publishing something broken.
 
 ## When unsure
 
