@@ -280,6 +280,20 @@ def test_build_index_skips_off_site_absolute_address():
     assert "evil" not in names
 
 
+def test_build_index_raises_on_schema_drift():
+    # Entries are present, but the field names changed (address/id -> path/anchor):
+    # nothing is extractable. That must fail loudly rather than yield an empty
+    # index — the guard against silent breakage when Verso changes xref.json.
+    xref = {
+        "Verso.Genre.Manual.doc.tactic": {
+            "title": "Tactic Reference",
+            "contents": {"simp": {"path": "Tactics/", "anchor": "simp"}},
+        }
+    }
+    with pytest.raises(RuntimeError, match="format may have changed"):
+        server._build_index(REF, xref)
+
+
 # ------------------------------------------------------------ _score / search_index
 
 

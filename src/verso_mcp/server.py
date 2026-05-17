@@ -558,6 +558,7 @@ def _build_index(site: Site, xref: Any) -> SiteIndex:
     labels: dict[str, str] = {}
     used_slugs: set[str] = set()
     root = site.root.rstrip("/")
+    saw_contents = False  # did any domain offer cross-reference entries to index?
 
     for domain_key, block in xref.items():
         if not isinstance(block, dict):
@@ -574,7 +575,12 @@ def _build_index(site: Site, xref: Any) -> SiteIndex:
             if isinstance(title, str) and title and title != domain_key
             else slug.replace("-", " ")
         )
-        for name, raw in (block.get("contents") or {}).items():
+        contents = block.get("contents")
+        if contents:
+            saw_contents = True
+        if not isinstance(contents, dict):
+            continue
+        for name, raw in contents.items():
             items = raw if isinstance(raw, list) else [raw]
             for item in items:
                 if not isinstance(item, dict):
@@ -622,6 +628,16 @@ def _build_index(site: Site, xref: Any) -> SiteIndex:
                         context=context,
                     )
                 )
+
+    # Schema-drift guard: the JSON parsed, but if domains offered entries and
+    # none survived, Verso's xref.json format has very likely changed. Fail
+    # loudly here instead of letting the tools quietly serve an empty index.
+    if saw_contents and not entries:
+        raise RuntimeError(
+            f"{site.xref_url} parsed as JSON but yielded no usable entries — "
+            "the Verso xref.json format may have changed; verso-mcp likely "
+            "needs an update."
+        )
 
     present = {e.kind for e in entries}
     kinds = {slug: labels[slug] for slug in labels if slug in present}
