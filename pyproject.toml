@@ -56,6 +56,12 @@ select = ["E", "F", "W", "I", "UP", "B"]
 testpaths = ["tests"]
 # `asyncio_mode = "auto"` lets `async def test_*` run without a per-test marker.
 asyncio_mode = "auto"
+# Network tests are opt-in: the default run (and CI's `quality` job) stays
+# offline and deterministic. The canary workflow runs them with `-m live`.
+addopts = ["-m", "not live"]
+markers = [
+    "live: end-to-end test against the live Lean Language Reference; excluded by default, run by the canary workflow",
+]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

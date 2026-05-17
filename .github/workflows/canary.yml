@@ -1,0 +1,24 @@
+name: xref canary
+
+# Drift alarm for Verso's undocumented xref.json format. The offline test suite
+# checks verso-mcp against a synthetic fixture, so it cannot detect an upstream
+# format change. This job exercises the live Lean Language Reference end to end;
+# if it fails, the format has likely drifted (see AGENTS.md, "Upstream format
+# drift"). A failed scheduled run notifies the repository owner by default.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"  # weekly, Monday 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - name: Live xref.json contract test
+        run: uv run pytest -m live -v
