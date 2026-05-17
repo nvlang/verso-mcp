@@ -1,6 +1,11 @@
 <br>
 <div align="center">
-<h1>verso-mcp</h1>
+<picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/nvlang/verso-mcp/main/res/logotype-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/nvlang/verso-mcp/main/res/logotype-light.svg">
+    <img alt="verso-mcp" src="https://raw.githubusercontent.com/nvlang/verso-mcp/main/res/logotype-light.svg" width="70%">
+</picture>
+<br>
 <br>
 <div>
 
