@@ -29,9 +29,9 @@ dependencies = [
     "pydantic>=2",
 ]
 
-# TODO before publishing: add a public repository URL once the repo is hosted, e.g.
-# [project.urls]
-# Repository = "https://github.com/<your-username>/verso-mcp"
+[project.urls]
+Repository = "https://github.com/nvlang/verso-mcp"
+Issues = "https://github.com/nvlang/verso-mcp/issues"
 
 [project.scripts]
 verso-mcp = "verso_mcp:main"

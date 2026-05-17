@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.YOUR_GITHUB_USERNAME/verso",
+  "name": "io.github.nvlang/verso",
   "description": "MCP server for Verso-generated documentation sites (the Lean Language Reference, Functional Programming in Lean, and other Verso Manual-genre sites).",
   "repository": {
-    "url": "https://github.com/YOUR_GITHUB_USERNAME/verso-mcp",
+    "url": "https://github.com/nvlang/verso-mcp",
     "source": "github"
   },
   "version": "0.3.1",
