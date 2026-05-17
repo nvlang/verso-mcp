@@ -161,9 +161,11 @@ The in-repo identifiers are set — `server.json`, `README.md`, and
 `pyproject.toml` all point at `nvlang/verso-mcp`. What remains is one-time
 account and repository setup that cannot live in the repo:
 
-- **PyPI Trusted Publishing** — register this repository and the `release.yml`
-  workflow as a trusted publisher for the `verso-mcp` PyPI project (no
-  environment name). Until this is done the `pypi` release job cannot upload.
+- **PyPI Trusted Publishing** — register this repository, the `release.yml`
+  workflow, and the `pypi` environment as a trusted publisher for the
+  `verso-mcp` PyPI project, and create that `pypi` environment under the repo's
+  Settings → Environments. Until this is done the `pypi` release job cannot
+  upload.
 - **Repository settings** — enable "Allow auto-merge", add a branch-protection
   rule on `main` that requires the `quality` and `commits` CI checks, and allow
   GitHub Actions to approve pull requests. Without these the Dependabot

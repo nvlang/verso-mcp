@@ -8,8 +8,10 @@ name: Release
 # this repository by this workflow. PyPI shows this on the project page.
 #
 # Prerequisites (one-time):
-#   * PyPI Trusted Publishing: register this repo + workflow `release.yml` as a
-#     trusted publisher for the `verso-mcp` project at https://pypi.org/manage/.
+#   * PyPI Trusted Publishing: register this repo, workflow `release.yml`, and
+#     environment `pypi` as a trusted publisher for the `verso-mcp` project at
+#     https://pypi.org/manage/ — and create the `pypi` environment under the
+#     repository's Settings > Environments.
 #   * MCP registry: fill the namespace placeholder in `server.json` (and the
 #     `mcp-name` marker in README.md). With an `io.github.<owner>/...` name, the
 #     `registry` job authenticates via GitHub OIDC — no secret needed.
@@ -36,6 +38,9 @@ jobs:
   pypi:
     needs: build
     runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/verso-mcp
     permissions:
       id-token: write  # PyPI Trusted Publishing (OIDC)
     steps:
