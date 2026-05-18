@@ -6,12 +6,12 @@
     "url": "https://github.com/nvlang/verso-mcp",
     "source": "github"
   },
-  "version": "0.3.1",
+  "version": "0.4.2",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "verso-mcp",
-      "version": "0.3.1",
+      "version": "0.4.2",
       "transport": {
         "type": "stdio"
       },

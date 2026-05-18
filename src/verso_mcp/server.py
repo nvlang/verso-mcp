@@ -62,7 +62,7 @@ from pydantic import Field
 
 # --------------------------------------------------------------------- constants
 
-__version__ = "0.4.0"
+__version__ = "0.4.2"
 
 CACHE_DIR = Path(os.environ.get("VERSO_MCP_CACHE", str(Path.home() / ".cache" / "verso-mcp")))
 XREF_TTL_SECONDS = 24 * 3600
