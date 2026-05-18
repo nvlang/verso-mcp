@@ -56,7 +56,7 @@ jobs:
           attestations: true
 
   registry:
-    needs: build
+    needs: pypi
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # MCP registry GitHub OIDC auth
