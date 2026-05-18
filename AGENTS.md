@@ -34,7 +34,7 @@ that makes the server bigger needs a strong, specific justification.
 | `pyproject.toml` | Packaging, dependencies, tool config (ruff, pytest, commitizen). |
 | `server.json` | MCP registry manifest. |
 | `evaluation.xml` | 10-question eval suite (mcp-builder format). |
-| `.github/workflows/` | CI, release, Scorecard, Dependabot auto-merge, xref-drift canary. |
+| `.github/workflows/` | CI, CodeQL, release, Scorecard, Dependabot auto-merge, xref-drift canary. |
 
 The version number lives in **one** place — `__version__` in `server.py` — and
 is surfaced everywhere else dynamically (hatchling) or by `cz bump`. Never edit a
