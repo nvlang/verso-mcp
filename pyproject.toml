@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.29.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Documentation",
 ]
 dependencies = [
-    "mcp[cli]>=1.2",
+    "mcp[cli]>=1.27.1",
     "httpx>=0.27",
     "html2text>=2024.2.26",
     "pydantic>=2",
