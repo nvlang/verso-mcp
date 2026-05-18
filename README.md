@@ -30,7 +30,7 @@ Verso powers most of the Lean ecosystem's reference docs and books — the
 and more. Verso *Manual*-genre sites publish a machine-readable cross-reference
 index (`xref.json`); this server consumes that index and the rendered HTML.
 
-> [!CAUTION]
+> [!WARNING]
 > The format of the `xref.json` files that this server depends on is
 > Verso-internal and may change at any time. Such changes could render this
 > server non-functional. I'll try to keep up with any such changes, but can't
